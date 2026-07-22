@@ -1,0 +1,52 @@
+<evaluation>
+  <!--
+    HyperSignal MCP eval set. Questions are independent, read-only, multi-step,
+    verifiable, and time-stable (they test tool usage and structural facts, not
+    volatile prices). Run manually against a network-reachable deployment:
+    the agent is given the HyperSignal MCP tools and must answer using them.
+  -->
+  <qa_pair>
+    <question>Using the HyperSignal tools, is there a perpetual market for BTC on Hyperliquid? Answer yes or no.</question>
+    <answer>Yes. hl_get_markets with filter "BTC" returns a BTC perp (among others like kBTC/HYPE-style symbols); BTC is a listed perpetual.</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Call hl_get_orderbook for ETH with depth 5. Is the best bid price strictly lower than the best ask price?</question>
+    <answer>Yes. In a valid L2 book the top bid is below the top ask; the tool also returns a positive spread and spreadBps.</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>In hl_get_markets output, how is the annualized funding (fundingApr) derived from the hourly funding rate?</question>
+    <answer>fundingApr = hourly funding rate × 24 × 365 (funding accrues hourly on Hyperliquid). The field is returned as a decimal fraction.</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Which single tool returns an arbitrary wallet's open perp positions together with its equity, margin usage, and each position's liquidation price?</question>
+    <answer>hl_get_account. It returns accountValue, totalMarginUsed, marginUtilization, and positions[] including liquidationPx and leverage.</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>You want to find delta-neutral carry opportunities by screening every perp's annualized funding and cross-venue funding spreads. Which premium tool do you use, and does it return annualized values?</question>
+    <answer>hl_funding_screener. It returns per-market fundingApr/fundingAprPct plus venueSpreads (cross-venue predicted funding), all annualized.</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>How does HyperSignal identify HIP-3 (builder-deployed) perp markets, and which tool reports analytics for them?</question>
+    <answer>HIP-3 markets are identified by a "dex:coin" naming convention (the symbol contains a ':'). hl_hip3_analytics reports their volume, OI, funding, and basis.</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Are the trading tools (e.g. hl_place_order) available when connecting to the remote HTTP (Streamable HTTP) HyperSignal server? Why or why not?</question>
+    <answer>No. Trading tools are exposed only in local stdio mode. The remote HTTP server registers free + premium tiers only and never the trading tier (a hard safety rule).</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>By default, what three price shocks does hl_portfolio_risk stress-test, and what does the "wipeout" flag mean?</question>
+    <answer>Defaults are -5%, -10%, and -20%. "wipeout" is true when the stressed equity falls to or below the account's cross maintenance margin (liquidation territory).</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Multi-step: run hl_whale_flow_alerts once for a cohort with a cold cache, then reason about the result. Will it report alerts on the very first call?</question>
+    <answer>No. The first call seeds a baseline snapshot (baselineFound=false) because there is no prior snapshot to diff against. Alerts appear on later calls once a comparable snapshot exists within the lookback window.</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Call hl_get_candles for BTC at interval 1h with lookback 10. In what order are candles returned and what numeric fields does each contain?</question>
+    <answer>Candles are returned oldest-first (ascending open time t). Each has numeric open (o), high (h), low (l), close (c), volume (v), trade count (n), and timestamp t.</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>If you call a premium tool such as hl_portfolio_risk on the remote server without an API key and with x402 disabled, what happens?</question>
+    <answer>The call is denied with a payment_required error explaining that a valid API key is needed (free keys get 100 premium calls/month; Pro is unlimited at $19/mo). No analytics are returned until authorized.</answer>
+  </qa_pair>
+</evaluation>

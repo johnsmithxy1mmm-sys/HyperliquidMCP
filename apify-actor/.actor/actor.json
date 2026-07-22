@@ -1,0 +1,19 @@
+{
+  "actorSpecification": 1,
+  "name": "hypersignal-hyperliquid-signals",
+  "title": "HyperSignal — Hyperliquid Whale & Risk Signals",
+  "description": "Pay-per-event access to HyperSignal's premium Hyperliquid analytics: whale flow alerts, funding screener, and portfolio risk.",
+  "version": "0.1",
+  "meta": {
+    "templateId": "node"
+  },
+  "input": "./input_schema.json",
+  "dockerfile": "../Dockerfile",
+  "storages": {
+    "dataset": {
+      "actorSpecification": 1,
+      "title": "Signal results",
+      "views": {}
+    }
+  }
+}

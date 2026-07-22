@@ -1,0 +1,15 @@
+{
+  "name": "hypersignal-apify-actor",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Thin Apify Actor wrapper exposing HyperSignal premium Hyperliquid tools as pay-per-event.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node main.js"
+  },
+  "dependencies": {
+    "apify": "^3.2.6"
+  }
+}

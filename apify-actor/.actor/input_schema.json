@@ -1,0 +1,24 @@
+{
+  "title": "HyperSignal input",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "tool": {
+      "title": "Tool",
+      "type": "string",
+      "description": "Which premium signal to run.",
+      "editor": "select",
+      "enum": ["hl_whale_flow_alerts", "hl_funding_screener", "hl_portfolio_risk"],
+      "enumTitles": ["Whale flow alerts", "Funding screener", "Portfolio risk"],
+      "default": "hl_funding_screener"
+    },
+    "arguments": {
+      "title": "Arguments",
+      "type": "object",
+      "description": "Tool arguments (see README). E.g. {\"address\":\"0x...\"} for portfolio risk, or {\"cohort\":[\"0x...\"]} for whale alerts.",
+      "editor": "json",
+      "default": {}
+    }
+  },
+  "required": ["tool"]
+}

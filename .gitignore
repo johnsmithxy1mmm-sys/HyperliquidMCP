@@ -1,0 +1,11 @@
+node_modules/
+dist/
+data/
+*.db
+*.db-*
+.env
+.env.local
+*.log
+.DS_Store
+apify-actor/node_modules/
+apify-actor/storage/
