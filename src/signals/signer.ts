@@ -20,18 +20,29 @@ export interface SignedSignal {
   publicKey: string; // base64 raw (SPKI DER base64)
 }
 
-/** Deterministic JSON: object keys sorted recursively, so the hash is stable. */
+/**
+ * Deterministic JSON: object keys sorted recursively, so the hash is stable.
+ * Cycle detection tracks only the CURRENT path (add before recursing, delete
+ * after) — a legitimately repeated reference (DAG) serializes normally instead
+ * of degrading to null; only true cycles become null.
+ */
 export function canonicalize(value: unknown): string {
-  const seen = new WeakSet();
+  const path = new WeakSet();
   const norm = (v: unknown): unknown => {
     if (v === null || typeof v !== "object") return v;
-    if (seen.has(v as object)) return null;
-    seen.add(v as object);
-    if (Array.isArray(v)) return v.map(norm);
-    const out: Record<string, unknown> = {};
-    for (const k of Object.keys(v as Record<string, unknown>).sort()) {
-      out[k] = norm((v as Record<string, unknown>)[k]);
+    if (path.has(v as object)) return null; // genuine cycle
+    path.add(v as object);
+    let out: unknown;
+    if (Array.isArray(v)) {
+      out = v.map(norm);
+    } else {
+      const obj: Record<string, unknown> = {};
+      for (const k of Object.keys(v as Record<string, unknown>).sort()) {
+        obj[k] = norm((v as Record<string, unknown>)[k]);
+      }
+      out = obj;
     }
+    path.delete(v as object);
     return out;
   };
   return JSON.stringify(norm(value));

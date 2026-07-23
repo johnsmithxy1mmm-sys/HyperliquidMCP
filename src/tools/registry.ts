@@ -57,6 +57,12 @@ export interface ToolDef {
   inputSchema: ZodRawShape;
   outputSchema?: ZodRawShape;
   annotations: ToolAnnotations;
+  /**
+   * Tool stores per-user state and needs a stable identity (API key). Checked
+   * BEFORE the billing gate so an x402 pay-per-call user is never charged for
+   * a call that would then be refused for lack of identity.
+   */
+  requiresSubject?: boolean;
   run: (args: Record<string, unknown>, ctx: ToolContext) => Promise<{ summary: string; data: unknown }>;
 }
 
@@ -74,6 +80,13 @@ export function registerTool(server: McpServer, def: ToolDef, ctx: ToolContext):
     // The SDK validates args against inputSchema before calling us.
     async (args: Record<string, unknown>) => {
       try {
+        if (def.requiresSubject && (!ctx.subject || ctx.subject === "anon")) {
+          throw new ToolError(
+            "auth_required",
+            `Tool "${def.name}" stores per-user state and requires an API key (X-API-Key header). ` +
+              `Pay-per-call x402 has no stable identity, so it cannot own alerts.`,
+          );
+        }
         if (def.tier === "premium") await ctx.authorize(def.name);
         const { summary, data } = await def.run(args ?? {}, ctx);
         return {

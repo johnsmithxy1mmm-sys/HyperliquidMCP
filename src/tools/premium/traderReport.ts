@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { ToolDef } from "../registry.js";
 import { assertAddress, num, round, sharpe } from "../../core/format.js";
 import { ANALYTICS_DISCLAIMER } from "../../hl/whales.js";
-import type { UserFill } from "../../hl/types.js";
+import { estimateHoldMinutes } from "../../smartmoney/profile.js";
 
 /**
  * Full trader breakdown from fills: winrate, average R (win/loss ratio),
@@ -125,29 +125,4 @@ function downsample<T>(arr: T[], points: number): T[] {
   for (let i = 0; i < points; i++) out.push(arr[Math.floor(i * step)]);
   out.push(arr[arr.length - 1]);
   return out;
-}
-
-function estimateHoldMinutes(fills: UserFill[]): number | null {
-  // Approximate: for each coin, time between a position-opening fill (startPosition ~ 0)
-  // and the subsequent closing fill (closedPnl != 0). Falls back to null if insufficient.
-  const gaps: number[] = [];
-  const openTimeByCoin = new Map<string, number>();
-  for (const f of fills) {
-    const start = num(f.startPosition);
-    if (Math.abs(start) < 1e-9 && !openTimeByCoin.has(f.coin)) {
-      openTimeByCoin.set(f.coin, f.time);
-    }
-    if (num(f.closedPnl) !== 0) {
-      const opened = openTimeByCoin.get(f.coin);
-      if (opened !== undefined) {
-        gaps.push((f.time - opened) / 60_000);
-        openTimeByCoin.delete(f.coin);
-      }
-    }
-  }
-  if (gaps.length === 0) return null;
-  gaps.sort((a, b) => a - b);
-  const mid = Math.floor(gaps.length / 2);
-  const median = gaps.length % 2 ? gaps[mid] : (gaps[mid - 1] + gaps[mid]) / 2;
-  return round(median, 1);
 }

@@ -4,6 +4,7 @@ import { ToolError } from "../../core/errors.js";
 import { resolveMarket } from "../../hl/markets.js";
 import { normalizeAccount } from "../../hl/account.js";
 import { addressForKey } from "../../trading/signing.js";
+import { assertAddress } from "../../core/format.js";
 import { planTwap, planMirror, type MirrorPositionInput } from "../../execution/plan.js";
 
 const EXEC_DISCLAIMER =
@@ -103,7 +104,8 @@ export const copyWallet: ToolDef = {
   annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   run: async (args, ctx) => {
     const { trading } = requireExecution(ctx);
-    const target = await ctx.hl.clearinghouseState(String(args.targetAddress));
+    const targetAddress = assertAddress(String(args.targetAddress));
+    const target = await ctx.hl.clearinghouseState(targetAddress);
     const targetAcct = normalizeAccount(target);
 
     let myEquity = args.myEquityUsd as number | undefined;

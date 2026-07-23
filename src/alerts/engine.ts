@@ -33,7 +33,10 @@ export class AlertEngine {
 
   start(intervalMs = Number(process.env.ALERT_INTERVAL_SEC ?? 60) * 1000): void {
     if (this.timer) return;
-    const period = Math.max(15_000, intervalMs);
+    // NaN-safe: a malformed ALERT_INTERVAL_SEC must not become setInterval(NaN)
+    // (which fires continuously — a busy loop).
+    const safe = Number.isFinite(intervalMs) && intervalMs > 0 ? intervalMs : 60_000;
+    const period = Math.max(15_000, safe);
     this.timer = setInterval(() => void this.tick(), period);
     this.timer.unref?.();
     log.info("alert engine started", { periodMs: period });
@@ -50,7 +53,11 @@ export class AlertEngine {
     this.running = true;
     try {
       const alerts = this.store.alerts.listActive();
-      if (alerts.length === 0) return 0;
+      // Signals must keep getting scored even when every alert has been
+      // deleted — otherwise the track record freezes. Only skip the network
+      // round-trip when there is truly nothing to do.
+      const due = this.store.signals.dueForScoring(now);
+      if (alerts.length === 0 && due.length === 0) return 0;
 
       const rows = await getMarketRows(this.hl);
       const marketByCoin = new Map(rows.map((r) => [r.coin, r]));

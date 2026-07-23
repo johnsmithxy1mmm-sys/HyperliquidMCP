@@ -34,7 +34,9 @@ export function planTwap(p: TwapParams): ChildOrder[] {
     allocated = round(allocated + size, 10);
     out.push({ index: i, size, atOffsetMs: Math.round(gap * i) });
   }
-  return out;
+  // Accumulated rounding can leave the folded last slice ≤ 0 — drop empty
+  // children and reindex so indices stay contiguous for the runner.
+  return out.filter((c) => c.size > 0).map((c, i) => ({ ...c, index: i }));
 }
 
 /** Iceberg: fixed-size clips until totalSize is consumed, fired back-to-back. */

@@ -106,6 +106,8 @@ export class AlertStore {
     this.db
       .prepare(`INSERT INTO fired_events (alert_id, subject, at, message, payload, acked) VALUES (?, ?, ?, ?, ?, 0)`)
       .run(alertId, subject, at, message, JSON.stringify(payload));
+    // Keep the table bounded: delivered events older than 30 days are history.
+    this.db.prepare(`DELETE FROM fired_events WHERE acked = 1 AND at < ?`).run(Date.now() - 30 * 86_400_000);
   }
 
   /** Return unacked events for a subject and mark them acked (at-least-once delivery). */

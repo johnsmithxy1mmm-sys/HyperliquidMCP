@@ -19,6 +19,7 @@ function requireOwner(ctx: ToolContext): string {
 export const createAlert: ToolDef = {
   name: "hl_create_alert",
   tier: "premium",
+  requiresSubject: true,
   title: "Create a standing alert",
   description:
     "Register a persistent alert the server evaluates on a schedule; fired events are retrieved with hl_poll_alerts. " +
@@ -59,6 +60,7 @@ export const createAlert: ToolDef = {
 export const listAlerts: ToolDef = {
   name: "hl_list_alerts",
   tier: "premium",
+  requiresSubject: true,
   title: "List your standing alerts",
   description: "List the standing alerts registered under your API key, with their type, params, and last-fired time.",
   inputSchema: {},
@@ -81,6 +83,7 @@ export const listAlerts: ToolDef = {
 export const deleteAlert: ToolDef = {
   name: "hl_delete_alert",
   tier: "premium",
+  requiresSubject: true,
   title: "Delete a standing alert",
   description: "Delete one of your standing alerts by id.",
   inputSchema: { id: z.string().describe("Alert id from hl_create_alert / hl_list_alerts.") },
@@ -97,6 +100,7 @@ export const deleteAlert: ToolDef = {
 export const pollAlerts: ToolDef = {
   name: "hl_poll_alerts",
   tier: "premium",
+  requiresSubject: true,
   title: "Poll fired alerts",
   description:
     "Retrieve alert events that fired since your last poll (at-least-once, then marked delivered). Each event " +

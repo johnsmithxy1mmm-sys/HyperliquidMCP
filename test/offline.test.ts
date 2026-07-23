@@ -28,7 +28,7 @@ import { createPublicKey, verify as edVerify } from "node:crypto";
 import { scoreTrader, labelTrader } from "../src/smartmoney/score.js";
 import type { TraderProfile } from "../src/smartmoney/profile.js";
 import { cosineSimilarity, detectCoordination, type WalletVector } from "../src/smartmoney/coordination.js";
-import { normCdf, annualizedVol, probAboveAtExpiry, probTouchAbove, impliedProbForMode } from "../src/polymarket/pricing.js";
+import { normCdf, annualizedVol, probAboveAtExpiry, probTouchAbove, probTouchBelow, impliedProbForMode } from "../src/polymarket/pricing.js";
 import { parseThresholdMarket, parseThresholdUsd, yearsToExpiry } from "../src/polymarket/parse.js";
 import { aggregateByCoin, type CohortAccount } from "../src/hl/whales.js";
 import { clampFee } from "../src/config.js";
@@ -328,6 +328,46 @@ test("yearsToExpiry non-negative", () => {
   assert.ok(yearsToExpiry(Date.now() + 365 * 86400000) > 0.99);
   assert.equal(yearsToExpiry(Date.now() - 1000), 0);
   assert.equal(yearsToExpiry(undefined), 0);
+});
+
+test("canonicalize preserves repeated (non-cyclic) references", () => {
+  const shared = { x: 1 };
+  const s = canonicalize({ a: shared, b: shared });
+  assert.equal(s, '{"a":{"x":1},"b":{"x":1}}'); // not null for the second ref
+  // genuine cycle degrades to null instead of blowing the stack
+  const cyc: Record<string, unknown> = {};
+  cyc.self = cyc;
+  assert.equal(canonicalize(cyc), '{"self":null}');
+});
+
+test("parseThresholdUsd skips bare years and prefers $/suffixed values", () => {
+  assert.equal(parseThresholdUsd("Will Bitcoin ETF approval in 2024 push BTC above $50k?"), 50000);
+  assert.equal(parseThresholdUsd("above 100000 by March 5"), 100000); // larger wins at equal score
+  assert.equal(parseThresholdUsd("in 2025"), null); // year alone is not a price
+});
+
+test("parseThresholdMarket detects touch_below for downward reach-verbs", () => {
+  const a = parseThresholdMarket("Will Bitcoin drop to $70k by June?");
+  assert.equal(a?.mode, "touch_below");
+  assert.equal(a?.thresholdUsd, 70000);
+  const b = parseThresholdMarket("Will Solana be below $100 at year end?");
+  assert.equal(b?.mode, "below"); // plain below stays at-expiry
+});
+
+test("probTouchBelow: certain when already below, >= at-expiry prob otherwise", () => {
+  assert.equal(probTouchBelow(99000, 100000, 0.25, 0.6), 1);
+  const touch = probTouchBelow(110000, 100000, 0.25, 0.6);
+  const atExpiry = impliedProbForMode("below", 110000, 100000, 0.25, 0.6);
+  assert.ok(touch >= atExpiry - 1e-9);
+  assert.ok(touch > 0 && touch <= 1);
+  assert.equal(impliedProbForMode("touch_below", 99000, 100000, 0.25, 0.6), 1);
+});
+
+test("planTwap never emits non-positive slices, indices contiguous", () => {
+  const c = planTwap({ totalSize: 0.1, slices: 3, durationMs: 60000 });
+  assert.ok(c.every((x) => x.size > 0));
+  assert.deepEqual(c.map((x) => x.index), c.map((_, i) => i));
+  assert.ok(Math.abs(c.reduce((a, x) => a + x.size, 0) - 0.1) < 1e-9);
 });
 
 test("closePosition refuses submitting against a foreign address", async () => {

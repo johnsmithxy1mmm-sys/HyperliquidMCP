@@ -97,7 +97,10 @@ export class ExecutionRunner {
     args: { coin: string; isBuy: boolean; reduceOnly: boolean },
   ): Promise<void> {
     if (plan.status === "cancelled") return;
-    const slot = plan.children[child.index];
+    // Look up by index property, not array position — robust to any planner
+    // that filters/reorders children.
+    const slot = plan.children.find((s) => s.index === child.index);
+    if (!slot) return;
     const params: OrderParams = {
       coin: args.coin,
       isBuy: args.isBuy,

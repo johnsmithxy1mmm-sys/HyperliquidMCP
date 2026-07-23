@@ -62,9 +62,21 @@ export function probTouchAbove(S: number, K: number, tYears: number, sigma: numb
   return clamp01(2 * normCdf(-b / (sigma * Math.sqrt(tYears))));
 }
 
+/**
+ * P(price touches K at ANY time before T) — one-touch LOWER barrier, driftless.
+ * Symmetric to probTouchAbove: 2·Φ(−ln(S/K)/(σ√T)) for S > K.
+ */
+export function probTouchBelow(S: number, K: number, tYears: number, sigma: number): number {
+  if (!(S > 0) || !(K > 0)) return 0;
+  if (S <= K) return 1;
+  if (tYears <= 0 || sigma <= 0) return 0;
+  const b = Math.log(S / K); // > 0
+  return clamp01(2 * normCdf(-b / (sigma * Math.sqrt(tYears))));
+}
+
 /** Hyperliquid-implied probability of a parsed threshold event ("Yes" side). */
 export function impliedProbForMode(
-  mode: "above" | "below" | "touch",
+  mode: "above" | "below" | "touch" | "touch_below",
   S: number,
   K: number,
   tYears: number,
@@ -76,6 +88,8 @@ export function impliedProbForMode(
       return probBelowAtExpiry(S, K, tYears, sigma, drift);
     case "touch":
       return probTouchAbove(S, K, tYears, sigma);
+    case "touch_below":
+      return probTouchBelow(S, K, tYears, sigma);
     case "above":
     default:
       return probAboveAtExpiry(S, K, tYears, sigma, drift);
