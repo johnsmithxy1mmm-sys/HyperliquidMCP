@@ -21,8 +21,14 @@ try {
 
   // Charge a pay-per-event unit for the delivered premium result.
   // (Configure the "premium-call" event price in the Actor's monetization settings.)
-  if (typeof Actor.charge === "function") {
-    await Actor.charge({ eventName: "premium-call" });
+  // A charge failure (e.g. monetization not configured on this deployment) must
+  // not destroy an already-computed result — log and continue.
+  try {
+    if (typeof Actor.charge === "function") {
+      await Actor.charge({ eventName: "premium-call" });
+    }
+  } catch (chargeErr) {
+    console.warn(`premium-call charge failed (continuing): ${chargeErr instanceof Error ? chargeErr.message : chargeErr}`);
   }
 
   await Actor.pushData({

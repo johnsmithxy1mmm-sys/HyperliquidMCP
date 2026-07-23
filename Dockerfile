@@ -7,8 +7,9 @@ WORKDIR /app
 # Build toolchain for native better-sqlite3.
 RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
     && rm -rf /var/lib/apt/lists/*
-COPY package.json package-lock.json* tsconfig.json ./
-RUN npm install --no-audit --no-fund
+COPY package.json package-lock.json tsconfig.json ./
+# npm ci: reproducible builds strictly from the committed lockfile.
+RUN npm ci --no-audit --no-fund
 COPY src ./src
 RUN npm run build && npm prune --omit=dev
 

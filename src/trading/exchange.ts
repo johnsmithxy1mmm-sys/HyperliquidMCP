@@ -8,7 +8,7 @@ import type { Config } from "../config.js";
 import type { HyperliquidClient } from "../core/hlClient.js";
 import { resolveMarket } from "../hl/markets.js";
 import { postJson } from "../core/http.js";
-import { ToolError } from "../core/errors.js";
+import { ToolError, UpstreamError } from "../core/errors.js";
 import { isAddress } from "../core/format.js";
 import { signL1Action, addressForKey, formatSize, formatPrice, feeRateToPercentString } from "./signing.js";
 import { log } from "../logger.js";
@@ -44,6 +44,34 @@ export interface ExecResult {
   builderAttached: { b: string; f: number } | null;
   agentAddress?: string;
   response?: unknown;
+}
+
+interface ExchangeApiResponse {
+  status?: string;
+  response?: { type?: string; data?: { statuses?: unknown[] } };
+}
+
+/**
+ * Hyperliquid returns HTTP 200 even for REJECTED actions: either a top-level
+ * `status: "err"`, or per-order `{ error: "..." }` entries inside
+ * response.data.statuses. Treating any 200 as success would report "submitted"
+ * for orders the exchange refused — so both layers are checked here.
+ */
+export function assertExchangeOk(raw: unknown): void {
+  if (raw === null || typeof raw !== "object") {
+    throw new UpstreamError("Empty or non-object response from the exchange endpoint.");
+  }
+  const r = raw as ExchangeApiResponse;
+  if (r.status !== "ok") {
+    throw new ToolError("exchange_rejected", `Hyperliquid rejected the action: ${JSON.stringify(raw).slice(0, 300)}`);
+  }
+  const statuses = r.response?.data?.statuses ?? [];
+  const errors = statuses
+    .filter((s): s is { error: unknown } => typeof s === "object" && s !== null && "error" in s)
+    .map((s) => String(s.error));
+  if (errors.length > 0) {
+    throw new ToolError("order_rejected", `Order rejected by Hyperliquid: ${errors.join("; ")}`, { errors });
+  }
 }
 
 export class TradingService {
@@ -114,6 +142,17 @@ export class TradingService {
         coin: market.coin,
       });
     }
+    // Wire formatting (5 sig figs, decimal caps) must not silently move the
+    // price: >1% drift means the requested price is incompatible with the
+    // market's tick rules and would execute far from intent.
+    if (Math.abs(Number(order.p) - px) / px > 0.01) {
+      throw new ToolError(
+        "price_precision_loss",
+        `Price ${px} formats to ${order.p} under ${market.coin} tick rules (szDecimals=${market.szDecimals}); ` +
+          `pick a price representable at this precision.`,
+        { requested: px, formatted: order.p, szDecimals: market.szDecimals },
+      );
+    }
 
     const builder = this.builder();
     // Key order matters for msgpack determinism: type, orders, grouping, [builder].
@@ -179,6 +218,9 @@ export class TradingService {
       // and a retry would double-submit. The caller re-checks state instead.
       maxRetries: 0,
     });
+
+    // 200 OK does NOT mean accepted — inspect the exchange's own status fields.
+    assertExchangeOk(response);
 
     return { mode: "submitted", action, builderAttached: builder, agentAddress, response };
   }

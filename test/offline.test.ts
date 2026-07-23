@@ -14,6 +14,7 @@ import {
   feeRateToPercentString,
 } from "../src/trading/signing.js";
 import { sharpe, sortino, maxDrawdown, annualizeHourlyFunding, paginate, round, shortHash } from "../src/core/format.js";
+import { assertExchangeOk } from "../src/trading/exchange.js";
 import { aggregateByCoin, type CohortAccount } from "../src/hl/whales.js";
 import { clampFee } from "../src/config.js";
 import { TtlLruCache } from "../src/core/cache.js";
@@ -80,6 +81,28 @@ test("feeRateToPercentString has no float artifacts", () => {
   assert.equal(feeRateToPercentString(7), "0.007%"); // 7*0.001 float bug guard
   assert.equal(feeRateToPercentString(100), "0.1%");
   assert.equal(feeRateToPercentString(0), "0%");
+});
+
+test("assertExchangeOk accepts real acceptance shapes", () => {
+  // resting order + filled order + cancel "success" strings must all pass
+  assertExchangeOk({ status: "ok", response: { type: "order", data: { statuses: [{ resting: { oid: 1 } }] } } });
+  assertExchangeOk({ status: "ok", response: { type: "order", data: { statuses: [{ filled: { totalSz: "1" } }] } } });
+  assertExchangeOk({ status: "ok", response: { type: "cancel", data: { statuses: ["success"] } } });
+  assertExchangeOk({ status: "ok", response: { type: "default" } }); // no statuses at all
+});
+
+test("assertExchangeOk rejects exchange-level and order-level errors", () => {
+  assert.throws(() => assertExchangeOk({ status: "err", response: "Invalid signature" }), /rejected the action/);
+  assert.throws(
+    () =>
+      assertExchangeOk({
+        status: "ok",
+        response: { type: "order", data: { statuses: [{ error: "Insufficient margin" }] } },
+      }),
+    /Insufficient margin/,
+  );
+  assert.throws(() => assertExchangeOk(null), /Empty or non-object/);
+  assert.throws(() => assertExchangeOk("ok"), /Empty or non-object/);
 });
 
 test("shortHash is stable and compact", () => {

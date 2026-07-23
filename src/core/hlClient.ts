@@ -17,6 +17,7 @@ import type {
   OpenOrder,
   UserFill,
   PredictedFundings,
+  PerpDexEntry,
 } from "../hl/types.js";
 
 export class HyperliquidClient {
@@ -50,6 +51,18 @@ export class HyperliquidClient {
   spotMetaAndAssetCtxs(): Promise<unknown> {
     return this.cache.getOrLoad("spotMetaAndAssetCtxs", TTL.markets, () =>
       this.info<unknown>({ type: "spotMetaAndAssetCtxs" }, 2),
+    );
+  }
+
+  /** Builder-deployed perp dex list (HIP-3). First entry is null (default dex). */
+  perpDexs(): Promise<PerpDexEntry[]> {
+    return this.cache.getOrLoad("perpDexs", TTL.metadata, () => this.info<PerpDexEntry[]>({ type: "perpDexs" }, 2));
+  }
+
+  /** metaAndAssetCtxs scoped to a builder dex. Callers must try/catch — coverage varies. */
+  metaAndAssetCtxsForDex(dex: string): Promise<MetaAndAssetCtxs> {
+    return this.cache.getOrLoad(`metaAndAssetCtxs:${dex}`, TTL.markets, () =>
+      this.info<MetaAndAssetCtxs>({ type: "metaAndAssetCtxs", dex }, 2),
     );
   }
 

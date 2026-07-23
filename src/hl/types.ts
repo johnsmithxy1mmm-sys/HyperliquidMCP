@@ -136,3 +136,11 @@ export interface PredictedFundingVenue {
 
 /** predictedFundings => [coin, [ [venue, data|null], ... ]][] */
 export type PredictedFundings = Array<[string, Array<[string, PredictedFundingVenue | null]>]>;
+
+/** perpDexs => array whose first element is null (the default dex), then builder dexs. */
+export type PerpDexEntry = {
+  name: string;
+  full_name?: string;
+  deployer?: string;
+  oracle_updater?: string | null;
+} | null;
