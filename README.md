@@ -43,6 +43,7 @@ that attaches a builder code to orders.
 | `hl_signal_pubkey` | free | Ed25519 public key to independently **verify** any signal's authenticity + timestamp. |
 | `hl_smart_money_score` | premium | Rank a cohort by a **smart-money score** (risk-adjusted perf + winrate + reward/risk + size + activity) with behavioral **labels** (whale, sharp, scalper, market_maker_like, high_conviction, …). |
 | `hl_coordination_scan` | premium | Find wallets holding near-identical exposure (cosine similarity) — likely the **same entity / copy-bot / coordinated group**; returns clusters + strongest pairs. |
+| `hl_polymarket_divergence` | premium | Compare **Polymarket** price-threshold odds against the probability implied by Hyperliquid price + realized vol — a cross-market mispricing edge no other MCP offers. |
 
 Every emitted signal is **cryptographically signed** and scored against forward price — a track record that can't be cherry-picked. Persistence (alerts, positioning snapshots, signals) is SQLite-backed and survives restarts.
 

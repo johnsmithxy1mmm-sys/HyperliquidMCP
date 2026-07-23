@@ -28,6 +28,8 @@ import { createPublicKey, verify as edVerify } from "node:crypto";
 import { scoreTrader, labelTrader } from "../src/smartmoney/score.js";
 import type { TraderProfile } from "../src/smartmoney/profile.js";
 import { cosineSimilarity, detectCoordination, type WalletVector } from "../src/smartmoney/coordination.js";
+import { normCdf, annualizedVol, probAboveAtExpiry, probTouchAbove, impliedProbForMode } from "../src/polymarket/pricing.js";
+import { parseThresholdMarket, parseThresholdUsd, yearsToExpiry } from "../src/polymarket/parse.js";
 import { aggregateByCoin, type CohortAccount } from "../src/hl/whales.js";
 import { clampFee } from "../src/config.js";
 import { TtlLruCache } from "../src/core/cache.js";
@@ -264,6 +266,68 @@ test("cosineSimilarity + detectCoordination cluster co-moving wallets", () => {
   assert.equal(clusters.length, 1);
   assert.deepEqual(clusters[0].sort(), ["A", "B"]);
   assert.equal(pairs[0].a === "A" || pairs[0].b === "A", true);
+});
+
+test("normCdf matches known values", () => {
+  assert.ok(Math.abs(normCdf(0) - 0.5) < 1e-6);
+  assert.ok(Math.abs(normCdf(1.96) - 0.975) < 1e-3);
+  assert.ok(Math.abs(normCdf(-1.96) - 0.025) < 1e-3);
+});
+
+test("annualizedVol is positive and scales with periods", () => {
+  const closes = [100, 101, 99, 102, 98, 103, 97];
+  const v = annualizedVol(closes, 365);
+  assert.ok(v > 0);
+  assert.equal(annualizedVol([100], 365), 0); // insufficient data
+});
+
+test("threshold probabilities behave monotonically", () => {
+  // at expiry: prob(above) rises as S approaches/exceeds K
+  const low = probAboveAtExpiry(90000, 100000, 0.25, 0.6);
+  const high = probAboveAtExpiry(99000, 100000, 0.25, 0.6);
+  assert.ok(high > low);
+  assert.ok(low >= 0 && high <= 1);
+  // touch prob >= at-expiry prob for an upper barrier (can hit then fall back)
+  const touch = probTouchAbove(90000, 100000, 0.25, 0.6);
+  assert.ok(touch >= low - 1e-9);
+  // already above => certain
+  assert.equal(probTouchAbove(101000, 100000, 0.25, 0.6), 1);
+  // T=0 deterministic
+  assert.equal(probAboveAtExpiry(101000, 100000, 0, 0.6), 1);
+  assert.equal(probAboveAtExpiry(99000, 100000, 0, 0.6), 0);
+});
+
+test("impliedProbForMode dispatches; below = 1 - above", () => {
+  const above = probAboveAtExpiry(95000, 100000, 0.5, 0.5);
+  assert.ok(Math.abs(impliedProbForMode("below", 95000, 100000, 0.5, 0.5) - (1 - above)) < 1e-9);
+  assert.equal(impliedProbForMode("above", 95000, 100000, 0.5, 0.5), above);
+});
+
+test("parseThresholdMarket extracts asset, threshold, and mode", () => {
+  const a = parseThresholdMarket("Will Bitcoin reach $150,000 by December 31, 2025?");
+  assert.equal(a?.coin, "BTC");
+  assert.equal(a?.thresholdUsd, 150000);
+  assert.equal(a?.mode, "touch");
+  const b = parseThresholdMarket("Will Ethereum be above $4k on Jan 1?");
+  assert.equal(b?.coin, "ETH");
+  assert.equal(b?.thresholdUsd, 4000);
+  assert.equal(b?.mode, "above");
+  const c = parseThresholdMarket("Will Solana fall below $100 this year?");
+  assert.equal(c?.coin, "SOL");
+  assert.equal(c?.mode, "below");
+  assert.equal(parseThresholdMarket("Who wins the 2028 election?"), null);
+});
+
+test("parseThresholdUsd honors suffixes", () => {
+  assert.equal(parseThresholdUsd("$120k"), 120000);
+  assert.equal(parseThresholdUsd("1.2M"), 1200000);
+  assert.equal(parseThresholdUsd("$100,000"), 100000);
+});
+
+test("yearsToExpiry non-negative", () => {
+  assert.ok(yearsToExpiry(Date.now() + 365 * 86400000) > 0.99);
+  assert.equal(yearsToExpiry(Date.now() - 1000), 0);
+  assert.equal(yearsToExpiry(undefined), 0);
 });
 
 test("closePosition refuses submitting against a foreign address", async () => {

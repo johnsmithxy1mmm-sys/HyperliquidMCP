@@ -56,6 +56,11 @@ export interface Config {
     facilitatorUrl: string | undefined;
     pricePerCallUsdc: number;
   };
+
+  /** Polymarket cross-market analytics. */
+  polymarket: {
+    gammaUrl: string;
+  };
 }
 
 const MAINNET = "https://api.hyperliquid.xyz";
@@ -131,6 +136,10 @@ export function loadConfig(): Config {
       asset: process.env.X402_ASSET ?? "USDC",
       facilitatorUrl: process.env.X402_FACILITATOR_URL?.trim() || undefined,
       pricePerCallUsdc: envNum("X402_PRICE_PER_CALL_USDC", 0.01),
+    },
+
+    polymarket: {
+      gammaUrl: process.env.POLYMARKET_GAMMA_URL?.trim() || "https://gamma-api.polymarket.com",
     },
   };
   return cached;

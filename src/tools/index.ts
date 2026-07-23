@@ -25,6 +25,7 @@ import { traderReport } from "./premium/traderReport.js";
 import { createAlert, listAlerts, deleteAlert, pollAlerts } from "./premium/alerts.js";
 import { signalTrackRecord } from "./premium/signalTrackRecord.js";
 import { smartMoneyScore, coordinationScan } from "./premium/smartMoney.js";
+import { polymarketDivergence } from "./premium/polymarketDivergence.js";
 // Trading
 import { placeOrder } from "./trading/placeOrder.js";
 import { cancelOrder } from "./trading/cancelOrder.js";
@@ -58,6 +59,7 @@ export const PREMIUM_TOOLS: ToolDef[] = [
   signalTrackRecord,
   smartMoneyScore,
   coordinationScan,
+  polymarketDivergence,
 ];
 
 export const TRADING_TOOLS: ToolDef[] = [
