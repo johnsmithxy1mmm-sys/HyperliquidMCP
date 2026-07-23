@@ -2,6 +2,8 @@ import { z } from "zod";
 import type { ToolDef, ToolContext } from "../registry.js";
 import { ToolError } from "../../core/errors.js";
 import { ANALYTICS_DISCLAIMER } from "../../hl/whales.js";
+import { resolveMarket } from "../../hl/markets.js";
+import { isAddress } from "../../core/format.js";
 import type { AlertType, AlertParams } from "../../alerts/types.js";
 
 const ALERT_TYPES = ["funding_apr", "price_move", "whale_net_flip"] as const;
@@ -40,8 +42,11 @@ export const createAlert: ToolDef = {
   run: async (args, ctx) => {
     const subject = requireOwner(ctx);
     const type = args.type as AlertType;
+    // Validate the coin NOW: an alert on a typo'd symbol would otherwise sit
+    // silently forever without firing. Also canonicalizes the casing.
+    const market = await resolveMarket(ctx.hl, String(args.coin));
     const params: AlertParams = {
-      coin: String(args.coin),
+      coin: market.coin,
       aprThreshold: args.aprThreshold as number | undefined,
       movePct: args.movePct as number | undefined,
       windowMinutes: args.windowMinutes as number | undefined,
@@ -49,6 +54,15 @@ export const createAlert: ToolDef = {
     };
     if (type === "funding_apr" && params.aprThreshold === undefined) params.aprThreshold = 0.5;
     if (type === "price_move" && params.movePct === undefined) params.movePct = 0.05;
+    if (type === "whale_net_flip" && params.cohort && params.cohort.length > 0) {
+      const bad = params.cohort.filter((a) => !isAddress(a));
+      if (bad.length > 0) {
+        throw new ToolError("invalid_cohort", `Invalid 0x addresses in cohort: ${bad.slice(0, 3).join(", ")}.`, {
+          invalid: bad,
+        });
+      }
+      params.cohort = params.cohort.map((a) => a.toLowerCase());
+    }
     const rec = ctx.store.alerts.create(subject, type, params, args.cooldownMinutes as number);
     return {
       summary: `Alert ${rec.id.slice(0, 8)}… created: ${type} on ${params.coin}. Poll with hl_poll_alerts.`,

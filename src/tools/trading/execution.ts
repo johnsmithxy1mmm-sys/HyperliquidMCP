@@ -132,11 +132,23 @@ export const copyWallet: ToolDef = {
 
     const results: Array<Record<string, unknown>> = [];
     for (const o of orders) {
-      const res = await trading.placeOrder(
-        { coin: o.coin, isBuy: o.isBuy, sz: o.size, reduceOnly: false, tif: "Ioc" },
-        { confirm: true, dryRun: false },
-      );
-      results.push({ coin: o.coin, side: o.isBuy ? "buy" : "sell", size: o.size, mode: res.mode, reason: res.reason });
+      // One failed leg must not abort the batch: earlier legs are already on
+      // the exchange, so every leg's outcome has to be reported.
+      try {
+        const res = await trading.placeOrder(
+          { coin: o.coin, isBuy: o.isBuy, sz: o.size, reduceOnly: false, tif: "Ioc" },
+          { confirm: true, dryRun: false },
+        );
+        results.push({ coin: o.coin, side: o.isBuy ? "buy" : "sell", size: o.size, mode: res.mode, reason: res.reason });
+      } catch (err) {
+        results.push({
+          coin: o.coin,
+          side: o.isBuy ? "buy" : "sell",
+          size: o.size,
+          mode: "error",
+          reason: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
     return {
       summary: `Copy submitted: ${results.filter((r) => r.mode === "submitted").length}/${orders.length} mirror orders.`,

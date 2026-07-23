@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { ToolDef } from "../registry.js";
-import { assertAddress, num, round, sharpe, sortino, maxDrawdown } from "../../core/format.js";
+import { isAddress, num, round, sharpe, sortino, maxDrawdown } from "../../core/format.js";
 import { ANALYTICS_DISCLAIMER } from "../../hl/whales.js";
 import { log } from "../../logger.js";
 
@@ -49,17 +49,23 @@ export const vaultScreener: ToolDef = {
   run: async (args, ctx) => {
     const provided = (args.vaults as string[] | undefined) ?? [];
     const fromEnv = process.env.HL_VAULT_ADDRESSES?.split(",").map((s) => s.trim()).filter(Boolean) ?? [];
-    const list = (provided.length ? provided : fromEnv).map((a) => assertAddress(a));
+    const raw = provided.length ? provided : fromEnv;
+    // One malformed address must not sink the whole screen — report it instead.
+    const invalid = raw.filter((a) => !isAddress(a));
+    const list = raw.filter(isAddress).map((a) => a.toLowerCase());
     if (list.length === 0) {
       return {
-        summary: "No vaults to screen. Pass `vaults` (0x addresses) or set HL_VAULT_ADDRESSES.",
-        data: { screened: 0, unavailable: [], vaults: [], disclaimer: ANALYTICS_DISCLAIMER },
+        summary:
+          invalid.length > 0
+            ? `No valid vault addresses (${invalid.length} invalid). Pass 42-char 0x addresses.`
+            : "No vaults to screen. Pass `vaults` (0x addresses) or set HL_VAULT_ADDRESSES.",
+        data: { screened: 0, unavailable: invalid, vaults: [], disclaimer: ANALYTICS_DISCLAIMER },
       };
     }
     const sort = (args.sort as "apr" | "sharpe" | "sortino" | "tvl" | "maxDrawdown") ?? "sharpe";
     const minTvl = (args.minTvlUsd as number) ?? 0;
 
-    const unavailable: string[] = [];
+    const unavailable: string[] = [...invalid];
     const results: Array<Record<string, unknown>> = [];
 
     await Promise.all(

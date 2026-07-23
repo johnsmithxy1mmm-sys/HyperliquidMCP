@@ -11,6 +11,8 @@ export class RateLimiter {
   private readonly refillPerMs: number;
   private last = Date.now();
   private queue: Array<{ weight: number; resolve: () => void }> = [];
+  /** At most one wake-up timer pending — avoids a timer per queued waiter. */
+  private timerPending = false;
 
   constructor(weightPerMinute: number) {
     this.capacity = Math.max(1, weightPerMinute);
@@ -35,9 +37,15 @@ export class RateLimiter {
         this.queue.shift();
         head.resolve();
       } else {
-        const deficit = head.weight - this.tokens;
-        const waitMs = Math.ceil(deficit / this.refillPerMs);
-        setTimeout(() => this.pump(), Math.min(waitMs, 5_000));
+        if (!this.timerPending) {
+          this.timerPending = true;
+          const deficit = head.weight - this.tokens;
+          const waitMs = Math.ceil(deficit / this.refillPerMs);
+          setTimeout(() => {
+            this.timerPending = false;
+            this.pump();
+          }, Math.min(waitMs, 5_000));
+        }
         return;
       }
     }

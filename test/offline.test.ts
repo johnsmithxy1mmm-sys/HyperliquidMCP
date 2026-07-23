@@ -344,6 +344,8 @@ test("parseThresholdUsd skips bare years and prefers $/suffixed values", () => {
   assert.equal(parseThresholdUsd("Will Bitcoin ETF approval in 2024 push BTC above $50k?"), 50000);
   assert.equal(parseThresholdUsd("above 100000 by March 5"), 100000); // larger wins at equal score
   assert.equal(parseThresholdUsd("in 2025"), null); // year alone is not a price
+  assert.equal(parseThresholdUsd("Will ETH hit $1.5M market cap... no, price $1.5k?"), 1500000); // $ + suffix priority, larger tie-break
+  assert.equal(parseThresholdUsd("$100,000 by December 31, 2025"), 100000); // comma number beats day/skips year
 });
 
 test("parseThresholdMarket detects touch_below for downward reach-verbs", () => {

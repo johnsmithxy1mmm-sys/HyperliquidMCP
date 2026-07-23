@@ -86,11 +86,13 @@ export class SignalStore {
   }
 
   trackRecord(type?: string): TrackRecord[] {
-    const where = type ? `WHERE type = ?` : ``;
+    // Bounded to the most recent 10k signals so this stays fast after months
+    // of accumulation (the full history remains in the table).
+    const recent = `SELECT * FROM (SELECT * FROM signals ORDER BY ts DESC LIMIT 10000)`;
     const rows = (
       type
-        ? this.db.prepare(`SELECT * FROM signals ${where}`).all(type)
-        : this.db.prepare(`SELECT * FROM signals`).all()
+        ? this.db.prepare(`${recent} WHERE type = ?`).all(type)
+        : this.db.prepare(recent).all()
     ) as RawSignal[];
     const byType = new Map<string, SignalRow[]>();
     for (const r of rows.map(mapRow)) {

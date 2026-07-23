@@ -57,7 +57,9 @@ export const getCandles: ToolDef = {
     const interval = (args.interval as string) ?? "1h";
     const market = await resolveMarket(ctx.hl, coin);
 
-    const endTime = (args.endTime as number | undefined) ?? Date.now();
+    // Bucket the defaulted endTime to 10s so back-to-back calls share a cache
+    // key (Date.now() would make every request a cache miss).
+    const endTime = (args.endTime as number | undefined) ?? Math.floor(Date.now() / 10_000) * 10_000;
     let startTime = args.startTime as number | undefined;
     if (startTime === undefined) {
       const lookback = (args.lookback as number | undefined) ?? 200;

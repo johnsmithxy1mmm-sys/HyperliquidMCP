@@ -54,8 +54,9 @@ export const polymarketDivergence: ToolDef = {
     const volWindowDays = (args.volWindowDays as number) ?? 30;
     const minEdge = (args.minEdge as number) ?? 0.05;
 
-    // Realized volatility from Hyperliquid candles.
-    const endTime = Date.now();
+    // Realized volatility from Hyperliquid candles. endTime bucketed to 60s so
+    // repeated scans reuse the candle cache instead of refetching.
+    const endTime = Math.floor(Date.now() / 60_000) * 60_000;
     const startTime = endTime - volWindowDays * 86_400_000;
     const candles = await ctx.hl.candles(market.coin, interval, startTime, endTime);
     const closes = candles.sort((a, b) => a.t - b.t).map((c) => num(c.c));

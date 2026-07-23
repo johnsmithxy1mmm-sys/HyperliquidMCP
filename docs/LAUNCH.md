@@ -11,7 +11,7 @@
 cd HyperliquidMCP        # или hypersignal-mcp
 npm install
 npm run build
-npm test                 # 16/16 должны пройти
+npm test                 # все тесты должны пройти (40/40)
 ```
 
 Проверка через официальный MCP Inspector (открывает UI в браузере):
@@ -332,7 +332,7 @@ x402. Ничего дополнительно кодить не надо — с�
 
 # Быстрый чек-лист запуска
 
-1. [ ] `npm install && npm run build && npm test` (16/16)
+1. [ ] `npm install && npm run build && npm test` (40/40)
 2. [ ] `fly launch` + том + секреты (ключи, whale, builder)
 3. [ ] `fly deploy`, проверить `/healthz` и премиум-гейт
 4. [ ] Прогнать `evals/eval.xml`
