@@ -8,7 +8,9 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { loadConfig } from "./config.js";
 import { Core, buildServer } from "./server-core.js";
 import { TradingService } from "./trading/exchange.js";
-import type { Tier } from "./tools/registry.js";
+import { ExecutionRunner } from "./execution/runner.js";
+import { AlertEngine } from "./alerts/engine.js";
+import type { Tier, ToolContext } from "./tools/registry.js";
 import { log } from "./logger.js";
 
 async function main(): Promise<void> {
@@ -20,8 +22,13 @@ async function main(): Promise<void> {
 
   // Trading service always available locally so dry-run previews work without a key.
   const trading = new TradingService(config, core.hl);
+  const execution = new ExecutionRunner(trading);
 
-  const server = buildServer(core, { tiers, mode: "stdio", trading });
+  const server = buildServer(core, { tiers, mode: "stdio", subject: "local", trading, execution });
+
+  // Standing-alert engine (evaluates local alerts + builds the track record).
+  const cohortCtx = { config, hl: core.hl } as unknown as ToolContext;
+  new AlertEngine(core.hl, core.store, core.signer, cohortCtx).start();
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

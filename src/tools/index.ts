@@ -12,6 +12,7 @@ import { getCandles } from "./free/getCandles.js";
 import { getFundingHistory } from "./free/getFundingHistory.js";
 import { getAccount } from "./free/getAccount.js";
 import { getOpenOrders } from "./free/getOpenOrders.js";
+import { signalPubkey } from "./free/signalPubkey.js";
 // Premium
 import { whalePositions } from "./premium/whalePositions.js";
 import { whaleFlowAlerts } from "./premium/whaleFlowAlerts.js";
@@ -21,11 +22,14 @@ import { hip3Analytics } from "./premium/hip3Analytics.js";
 import { portfolioRisk } from "./premium/portfolioRisk.js";
 import { vaultScreener } from "./premium/vaultScreener.js";
 import { traderReport } from "./premium/traderReport.js";
+import { createAlert, listAlerts, deleteAlert, pollAlerts } from "./premium/alerts.js";
+import { signalTrackRecord } from "./premium/signalTrackRecord.js";
 // Trading
 import { placeOrder } from "./trading/placeOrder.js";
 import { cancelOrder } from "./trading/cancelOrder.js";
 import { closePosition } from "./trading/closePosition.js";
 import { approveBuilderFeeGuide } from "./trading/approveBuilderFeeGuide.js";
+import { twapOrder, copyWallet, executionStatus } from "./trading/execution.js";
 
 export const FREE_TOOLS: ToolDef[] = [
   getMarkets,
@@ -34,6 +38,7 @@ export const FREE_TOOLS: ToolDef[] = [
   getFundingHistory,
   getAccount,
   getOpenOrders,
+  signalPubkey,
 ];
 
 export const PREMIUM_TOOLS: ToolDef[] = [
@@ -45,9 +50,22 @@ export const PREMIUM_TOOLS: ToolDef[] = [
   portfolioRisk,
   vaultScreener,
   traderReport,
+  createAlert,
+  listAlerts,
+  deleteAlert,
+  pollAlerts,
+  signalTrackRecord,
 ];
 
-export const TRADING_TOOLS: ToolDef[] = [placeOrder, cancelOrder, closePosition, approveBuilderFeeGuide];
+export const TRADING_TOOLS: ToolDef[] = [
+  placeOrder,
+  cancelOrder,
+  closePosition,
+  approveBuilderFeeGuide,
+  twapOrder,
+  copyWallet,
+  executionStatus,
+];
 
 export const ALL_TOOLS: ToolDef[] = [...FREE_TOOLS, ...PREMIUM_TOOLS, ...TRADING_TOOLS];
 

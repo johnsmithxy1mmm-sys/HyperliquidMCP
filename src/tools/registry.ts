@@ -12,7 +12,10 @@ import type { Config } from "../config.js";
 import type { HyperliquidClient } from "../core/hlClient.js";
 import type { MidsFeed } from "../core/ws.js";
 import type { SnapshotStore } from "../core/snapshots.js";
+import type { Warehouse } from "../store/warehouse.js";
+import type { SignalSigner } from "../signals/signer.js";
 import type { TradingService } from "../trading/exchange.js";
+import type { ExecutionRunner } from "../execution/runner.js";
 import { ToolError } from "../core/errors.js";
 import { log } from "../logger.js";
 
@@ -23,11 +26,19 @@ export interface ToolContext {
   hl: HyperliquidClient;
   mids: MidsFeed;
   snapshots: SnapshotStore;
+  /** Persistent SQLite-backed stores (snapshots, alerts, signals). */
+  store: Warehouse;
+  /** Signs emitted signals for a verifiable track record. */
+  signer: SignalSigner;
+  /** Owner identity for per-subject resources (alerts). "local" in stdio. */
+  subject: string;
   mode: "stdio" | "http";
   /** Premium billing gate. Free/trading tools ignore it; premium tools await it first. */
   authorize: (toolName: string) => Promise<void>;
   /** Present only in stdio mode when trading is enabled. */
   trading?: TradingService;
+  /** Background execution runner (stdio trading only). */
+  execution?: ExecutionRunner;
 }
 
 export interface ToolAnnotations {

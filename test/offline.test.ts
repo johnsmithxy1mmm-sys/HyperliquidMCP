@@ -20,6 +20,11 @@ import type { Config } from "../src/config.js";
 import type { HyperliquidClient } from "../src/core/hlClient.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { planTwap, planIceberg, planMirror } from "../src/execution/plan.js";
+import { evaluateAlert } from "../src/alerts/evaluate.js";
+import type { AlertRecord } from "../src/alerts/types.js";
+import { SignalSigner, canonicalize } from "../src/signals/signer.js";
+import { createPublicKey, verify as edVerify } from "node:crypto";
 import { aggregateByCoin, type CohortAccount } from "../src/hl/whales.js";
 import { clampFee } from "../src/config.js";
 import { TtlLruCache } from "../src/core/cache.js";
@@ -141,6 +146,78 @@ test("snapshot store caps total keys (memory bound)", () => {
   assert.ok(keys.length <= 5_000, `expected <=5000 keys, got ${keys.length}`);
   assert.ok(keys.includes("k5009")); // newest survive, oldest evicted
   assert.ok(!keys.includes("k0"));
+});
+
+test("planTwap splits evenly and sums exactly to totalSize", () => {
+  const c = planTwap({ totalSize: 10, slices: 4, durationMs: 3 * 60_000 });
+  assert.equal(c.length, 4);
+  assert.equal(round(c.reduce((a, x) => a + x.size, 0), 6), 10);
+  assert.equal(c[0].atOffsetMs, 0);
+  assert.equal(c[3].atOffsetMs, 180_000); // last at full duration
+  // rounding drift folded into last slice
+  const d = planTwap({ totalSize: 1, slices: 3, durationMs: 0 });
+  assert.equal(round(d.reduce((a, x) => a + x.size, 0), 10), 1);
+});
+
+test("planIceberg clips to totalSize", () => {
+  const c = planIceberg(10, 3);
+  assert.deepEqual(c.map((x) => x.size), [3, 3, 3, 1]);
+  assert.equal(round(c.reduce((a, x) => a + x.size, 0), 6), 10);
+});
+
+test("planMirror scales exposure to equity and preserves direction", () => {
+  // $10k mirroring a $1M whale at scale 1 => ~1% of size
+  const orders = planMirror(
+    [{ coin: "BTC", szi: 10, markPx: 60000 }, { coin: "ETH", szi: -100, markPx: 3000 }],
+    10_000,
+    1_000_000,
+    1,
+  );
+  const btc = orders.find((o) => o.coin === "BTC");
+  const eth = orders.find((o) => o.coin === "ETH");
+  assert.ok(btc && btc.isBuy);
+  assert.equal(round(btc.size, 4), round(10 * 0.01, 4)); // 1% of 10
+  assert.ok(eth && !eth.isBuy); // short preserved
+});
+
+test("evaluateAlert funding_apr fires on rising edge only, with carry direction", () => {
+  const base: AlertRecord = {
+    id: "a", subject: "s", type: "funding_apr", params: { coin: "BTC", aprThreshold: 0.5 },
+    enabled: true, cooldownMinutes: 60, lastFiredAt: null, lastState: null, createdAt: 0,
+  };
+  const below = evaluateAlert(base, { now: 1, markPx: 60000, fundingApr: 0.2 });
+  assert.equal(below.fired, false);
+  const cross = evaluateAlert(base, { now: 2, markPx: 60000, fundingApr: 0.8 });
+  assert.equal(cross.fired, true);
+  assert.equal(cross.signal?.direction, "short"); // positive funding => fade longs
+  // already "over" => no re-fire
+  const stayOver = evaluateAlert({ ...base, lastState: { over: true } }, { now: 3, markPx: 60000, fundingApr: 0.9 });
+  assert.equal(stayOver.fired, false);
+});
+
+test("evaluateAlert whale_net_flip fires only on genuine long<->short flip", () => {
+  const a: AlertRecord = {
+    id: "w", subject: "s", type: "whale_net_flip", params: { coin: "ETH" },
+    enabled: true, cooldownMinutes: 60, lastFiredAt: null, lastState: { sign: 1 }, createdAt: 0,
+  };
+  const flip = evaluateAlert(a, { now: 1, markPx: 3000, whaleNetNtlUsd: -500000 });
+  assert.equal(flip.fired, true);
+  assert.equal(flip.signal?.direction, "short");
+  const same = evaluateAlert({ ...a, lastState: { sign: -1 } }, { now: 2, markPx: 3000, whaleNetNtlUsd: -400000 });
+  assert.equal(same.fired, false);
+});
+
+test("SignalSigner produces verifiable Ed25519 signatures; canonicalize is order-independent", () => {
+  assert.equal(canonicalize({ b: 1, a: 2 }), canonicalize({ a: 2, b: 1 }));
+  const signer = new SignalSigner(); // ephemeral
+  const signed = signer.sign({ type: "funding_apr", coin: "BTC", direction: "short", refPx: 60000 }, 123);
+  const canonical = canonicalize({ payload: { type: "funding_apr", coin: "BTC", direction: "short", refPx: 60000 }, ts: 123 });
+  const pub = createPublicKey({ key: Buffer.from(signed.publicKey, "base64"), format: "der", type: "spki" });
+  const ok = edVerify(null, Buffer.from(canonical), pub, Buffer.from(signed.signature, "base64"));
+  assert.equal(ok, true);
+  // tampered payload fails
+  const bad = edVerify(null, Buffer.from(canonical + "x"), pub, Buffer.from(signed.signature, "base64"));
+  assert.equal(bad, false);
 });
 
 test("closePosition refuses submitting against a foreign address", async () => {

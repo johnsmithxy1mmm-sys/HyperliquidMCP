@@ -64,6 +64,13 @@ export class BillingService {
     return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
   }
 
+  /** Stable per-key owner id for per-subject resources (alerts). "anon" if no valid key. */
+  subjectFor(auth: RequestAuth): string {
+    if (!auth.apiKey) return "anon";
+    const row = getKey(this.db, this.hash(auth.apiKey));
+    return row && !row.disabled ? row.keyHash : "anon";
+  }
+
   /** Build a per-request authorize() closure. */
   authorizerFor(auth: RequestAuth): (toolName: string) => Promise<void> {
     return async (toolName: string) => {

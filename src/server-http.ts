@@ -14,6 +14,8 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { loadConfig } from "./config.js";
 import { Core, buildServer, SERVER_NAME, SERVER_VERSION } from "./server-core.js";
 import { BillingService } from "./billing/service.js";
+import { AlertEngine } from "./alerts/engine.js";
+import type { ToolContext } from "./tools/registry.js";
 import { log } from "./logger.js";
 
 function envFlag(name: string): boolean {
@@ -54,6 +56,10 @@ async function main(): Promise<void> {
   const core = new Core(config);
   const billing = new BillingService(config);
 
+  // Standing-alert engine: evaluates alerts server-side and builds the track record.
+  const cohortCtx = { config, hl: core.hl } as unknown as ToolContext;
+  new AlertEngine(core.hl, core.store, core.signer, cohortCtx).start();
+
   const app = express();
   app.disable("x-powered-by");
   // Behind Fly/Nginx/Caddy the client IP arrives in X-Forwarded-For; only
@@ -92,9 +98,10 @@ async function main(): Promise<void> {
     const apiKey = headerStr(req, "x-api-key") ?? bearer(req);
     const xPayment = headerStr(req, "x-payment");
     const authorize = billing.authorizerFor({ apiKey, xPayment });
+    const subject = billing.subjectFor({ apiKey, xPayment });
 
     // Stateless: fresh server + transport per request.
-    const server = buildServer(core, { tiers: ["free", "premium"], mode: "http", authorize });
+    const server = buildServer(core, { tiers: ["free", "premium"], mode: "http", subject, authorize });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true,

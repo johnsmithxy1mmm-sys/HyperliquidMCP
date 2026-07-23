@@ -30,6 +30,9 @@ export async function runToolOnce(
     hl: sharedCore.hl,
     mids: sharedCore.mids,
     snapshots: sharedCore.snapshots,
+    store: sharedCore.store,
+    signer: sharedCore.signer,
+    subject: "apify",
     mode: "http",
     authorize: async () => undefined,
   };

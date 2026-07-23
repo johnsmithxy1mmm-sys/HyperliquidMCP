@@ -34,6 +34,16 @@ that attaches a builder code to orders.
 | `hl_vault_screener` | Vaults by APR, max drawdown, Sharpe/Sortino, age, TVL, leader share |
 | `hl_trader_report` | Wallet breakdown: winrate, avg R, PnL curve, scalp/swing style, top coins |
 
+### Agent-native (v0.3) — the differentiators
+| Tool | Tier | What it does |
+|---|---|---|
+| `hl_create_alert` / `hl_list_alerts` / `hl_delete_alert` | premium | Register/manage **standing alerts** (funding threshold, price move, whale net-flip). The server evaluates them on a schedule — it watches the market for your agent. |
+| `hl_poll_alerts` | premium | Retrieve fired alert events since your last poll (at-least-once), each with a signed signal payload. |
+| `hl_signal_track_record` | premium | Transparent, **verifiable performance** of emitted signals: hit-rate and avg/median direction-adjusted forward return per signal type. |
+| `hl_signal_pubkey` | free | Ed25519 public key to independently **verify** any signal's authenticity + timestamp. |
+
+Every emitted signal is **cryptographically signed** and scored against forward price — a track record that can't be cherry-picked. Persistence (alerts, positioning snapshots, signals) is SQLite-backed and survives restarts.
+
 ### Trading (optional, **local stdio only**, builder code, maximum warnings)
 | Tool | What it does |
 |---|---|
@@ -41,6 +51,9 @@ that attaches a builder code to orders.
 | `hl_cancel_order` | Cancel by coin + order id |
 | `hl_close_position` | Reduce-only market close |
 | `hl_approve_builder_fee_guide` | **Read-only** — generates the `approveBuilderFee` payload/instructions for your main wallet |
+| `hl_twap_order` | Slice a position into evenly-spaced child orders (TWAP) to minimize impact, builder code on each child |
+| `hl_copy_wallet` | Mirror a target wallet's positioning scaled to your equity (copy-trading), builder code attached |
+| `hl_execution_status` | Progress of running TWAP/execution plans |
 
 Trading defaults to **dry-run** (previews the exact signed action without sending). Submitting
 requires `HL_ENABLE_TRADING=true` + `HL_AGENT_PRIVATE_KEY` (env only) + `confirm=true` + `dryRun=false`.
