@@ -25,6 +25,9 @@ import { evaluateAlert } from "../src/alerts/evaluate.js";
 import type { AlertRecord } from "../src/alerts/types.js";
 import { SignalSigner, canonicalize } from "../src/signals/signer.js";
 import { createPublicKey, verify as edVerify } from "node:crypto";
+import { scoreTrader, labelTrader } from "../src/smartmoney/score.js";
+import type { TraderProfile } from "../src/smartmoney/profile.js";
+import { cosineSimilarity, detectCoordination, type WalletVector } from "../src/smartmoney/coordination.js";
 import { aggregateByCoin, type CohortAccount } from "../src/hl/whales.js";
 import { clampFee } from "../src/config.js";
 import { TtlLruCache } from "../src/core/cache.js";
@@ -218,6 +221,49 @@ test("SignalSigner produces verifiable Ed25519 signatures; canonicalize is order
   // tampered payload fails
   const bad = edVerify(null, Buffer.from(canonical + "x"), pub, Buffer.from(signed.signature, "base64"));
   assert.equal(bad, false);
+});
+
+function profile(over: Partial<TraderProfile>): TraderProfile {
+  return {
+    address: "0xabc", accountValue: 50_000, tradeCount: 50, closedTrades: 40, winratePct: 50,
+    avgR: 1, realizedPnl: 1000, pnlSharpe: 1, avgHoldMinutes: 120, distinctCoins: 5,
+    topConcentrationPct: 0.3, longShortBalance: 0.5, ...over,
+  };
+}
+
+test("scoreTrader ranks a big consistent winner above a small lucky one", () => {
+  const whale = scoreTrader(profile({ accountValue: 5_000_000, winratePct: 70, pnlSharpe: 2.5, avgR: 2.5, closedTrades: 180 }));
+  const small = scoreTrader(profile({ accountValue: 2_000, winratePct: 52, pnlSharpe: 0.3, avgR: 1.1, closedTrades: 8 }));
+  assert.ok(whale.score > small.score, `${whale.score} !> ${small.score}`);
+  assert.ok(whale.score >= 0 && whale.score <= 100);
+  assert.ok(whale.labels.includes("whale") && whale.labels.includes("sharp"));
+});
+
+test("labelTrader tags behavior", () => {
+  assert.ok(labelTrader(profile({ avgHoldMinutes: 10 })).includes("scalper"));
+  assert.ok(labelTrader(profile({ avgHoldMinutes: 3000 })).includes("swing"));
+  assert.ok(labelTrader(profile({ realizedPnl: -500 })).includes("underwater"));
+  assert.ok(
+    labelTrader(profile({ tradeCount: 400, longShortBalance: 0.8, avgHoldMinutes: 20 })).includes("market_maker_like"),
+  );
+  assert.ok(labelTrader(profile({ distinctCoins: 1, topConcentrationPct: 0.9 })).includes("high_conviction"));
+});
+
+test("cosineSimilarity + detectCoordination cluster co-moving wallets", () => {
+  const mk = (address: string, e: [string, number][]): WalletVector => ({ address, vec: new Map(e) });
+  // A and B mirror each other; C is opposite; D unrelated
+  const wallets = [
+    mk("A", [["BTC", 0.7], ["ETH", 0.3]]),
+    mk("B", [["BTC", 0.72], ["ETH", 0.28]]),
+    mk("C", [["BTC", -0.7], ["ETH", -0.3]]),
+    mk("D", [["SOL", 1]]),
+  ];
+  assert.ok(cosineSimilarity(wallets[0].vec, wallets[1].vec) > 0.99);
+  assert.ok(cosineSimilarity(wallets[0].vec, wallets[2].vec) < 0); // opposite
+  const { clusters, pairs } = detectCoordination(wallets, 0.9);
+  assert.equal(clusters.length, 1);
+  assert.deepEqual(clusters[0].sort(), ["A", "B"]);
+  assert.equal(pairs[0].a === "A" || pairs[0].b === "A", true);
 });
 
 test("closePosition refuses submitting against a foreign address", async () => {

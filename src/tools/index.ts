@@ -24,6 +24,7 @@ import { vaultScreener } from "./premium/vaultScreener.js";
 import { traderReport } from "./premium/traderReport.js";
 import { createAlert, listAlerts, deleteAlert, pollAlerts } from "./premium/alerts.js";
 import { signalTrackRecord } from "./premium/signalTrackRecord.js";
+import { smartMoneyScore, coordinationScan } from "./premium/smartMoney.js";
 // Trading
 import { placeOrder } from "./trading/placeOrder.js";
 import { cancelOrder } from "./trading/cancelOrder.js";
@@ -55,6 +56,8 @@ export const PREMIUM_TOOLS: ToolDef[] = [
   deleteAlert,
   pollAlerts,
   signalTrackRecord,
+  smartMoneyScore,
+  coordinationScan,
 ];
 
 export const TRADING_TOOLS: ToolDef[] = [
