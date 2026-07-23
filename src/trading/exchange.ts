@@ -170,6 +170,20 @@ export class TradingService {
 
   /** Close a position by submitting a reduce-only IOC market order for its full size. */
   async closePosition(coin: string, opts: ExecOptions, address?: string): Promise<ExecResult> {
+    // A submitted order ALWAYS executes on the agent wallet's own account, so
+    // sizing it from a different address's position would send a wrong-sized
+    // order. Foreign addresses are allowed for dry-run previews only.
+    if (address && opts.confirm && !opts.dryRun && this.config.agentPrivateKey) {
+      const agent = addressForKey(this.config.agentPrivateKey).toLowerCase();
+      if (address.toLowerCase() !== agent) {
+        throw new ToolError(
+          "address_mismatch",
+          `Submitting closes only the agent wallet's own positions (${agent.slice(0, 10)}…). ` +
+            `Omit 'address' to close your own position, or keep dryRun=true to preview another wallet.`,
+          { agentAddress: agent, requestedAddress: address },
+        );
+      }
+    }
     const who = address ?? (this.config.agentPrivateKey ? addressForKey(this.config.agentPrivateKey) : undefined);
     if (!who) throw new ToolError("no_address", "Provide `address`, or set HL_AGENT_PRIVATE_KEY to infer it.");
     const state = await this.hl.clearinghouseState(who);

@@ -67,6 +67,8 @@ primary_region = "iad"           # ближайший регион: iad, fra, si
   HL_NETWORK = "mainnet"
   HYPERSIGNAL_DB_PATH = "/app/data/hypersignal.db"
   HL_WS_ENABLED = "true"
+  TRUST_PROXY = "true"            # Fly передаёт клиентский IP в X-Forwarded-For
+  HTTP_RATE_LIMIT_PER_MIN = "120" # per-IP лимит на /mcp
 
 [http_service]
   internal_port = 8080

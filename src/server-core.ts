@@ -12,7 +12,7 @@ import type { ToolContext, Tier } from "./tools/registry.js";
 import type { TradingService } from "./trading/exchange.js";
 
 export const SERVER_NAME = "hypersignal-mcp";
-export const SERVER_VERSION = "0.1.0";
+export const SERVER_VERSION = "0.2.0";
 
 /** Long-lived singletons shared across requests. */
 export class Core {

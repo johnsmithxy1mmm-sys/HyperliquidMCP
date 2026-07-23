@@ -83,23 +83,18 @@ export async function verifyPayment(
     return { ok: false, reason: "no_facilitator_configured" };
   }
 
+  const base = config.x402.facilitatorUrl.replace(/\/$/, "");
+  const body = JSON.stringify({ x402Version: 1, paymentPayload: payload, paymentRequirements: requirements.accepts[0] });
+
   try {
-    const verifyRes = await fetch(`${config.x402.facilitatorUrl.replace(/\/$/, "")}/verify`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ x402Version: 1, paymentPayload: payload, paymentRequirements: requirements.accepts[0] }),
-    });
+    const verifyRes = await postWithTimeout(`${base}/verify`, body);
     const verifyBody = (await verifyRes.json().catch(() => ({}))) as { isValid?: boolean; invalidReason?: string };
     if (!verifyRes.ok || !verifyBody.isValid) {
       return { ok: false, reason: verifyBody.invalidReason ?? `verify_failed_${verifyRes.status}` };
     }
 
     // Settle on-chain via facilitator.
-    const settleRes = await fetch(`${config.x402.facilitatorUrl.replace(/\/$/, "")}/settle`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ x402Version: 1, paymentPayload: payload, paymentRequirements: requirements.accepts[0] }),
-    });
+    const settleRes = await postWithTimeout(`${base}/settle`, body);
     const settleBody = (await settleRes.json().catch(() => ({}))) as { success?: boolean; transaction?: string };
     if (!settleRes.ok || !settleBody.success) {
       return { ok: false, reason: "settlement_failed" };
@@ -116,4 +111,20 @@ export async function verifyPayment(
 
 function deriveId(payload: Record<string, unknown>): string {
   return JSON.stringify(payload).slice(0, 128);
+}
+
+/** Facilitator calls must never hang a request: hard 10s timeout per call. */
+async function postWithTimeout(url: string, body: string, timeoutMs = 10_000): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
 }

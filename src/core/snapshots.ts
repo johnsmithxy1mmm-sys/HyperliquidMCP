@@ -19,6 +19,9 @@ export interface SnapshotStore {
 
 const MAX_AGE_MS = 26 * 3_600_000;
 const MAX_PER_KEY = 200;
+/** Total tracked keys across all namespaces — caps memory even if clients
+ * supply endless distinct cohorts (each cohort hash creates new keys). */
+const MAX_TOTAL_KEYS = 5_000;
 
 export class InMemorySnapshotStore implements SnapshotStore {
   private readonly series = new Map<string, Snapshot[]>();
@@ -36,6 +39,12 @@ export class InMemorySnapshotStore implements SnapshotStore {
     let pruned = arr.filter((s) => s.at >= cutoff);
     if (pruned.length > MAX_PER_KEY) pruned = pruned.slice(pruned.length - MAX_PER_KEY);
     this.series.set(k, pruned);
+    // evict oldest-inserted keys when the global cap is exceeded
+    while (this.series.size > MAX_TOTAL_KEYS) {
+      const oldest = this.series.keys().next().value;
+      if (oldest === undefined) break;
+      this.series.delete(oldest);
+    }
   }
 
   nearest(ns: string, key: string, targetAgeMs: number, toleranceMs: number): Snapshot | undefined {

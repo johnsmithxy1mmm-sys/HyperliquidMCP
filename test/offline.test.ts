@@ -14,7 +14,12 @@ import {
   feeRateToPercentString,
 } from "../src/trading/signing.js";
 import { sharpe, sortino, maxDrawdown, annualizeHourlyFunding, paginate, round, shortHash } from "../src/core/format.js";
-import { assertExchangeOk } from "../src/trading/exchange.js";
+import { assertExchangeOk, TradingService } from "../src/trading/exchange.js";
+import { getDb, upsertKey, getKey, disableMissingBootstrapKeys } from "../src/billing/db.js";
+import type { Config } from "../src/config.js";
+import type { HyperliquidClient } from "../src/core/hlClient.js";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { aggregateByCoin, type CohortAccount } from "../src/hl/whales.js";
 import { clampFee } from "../src/config.js";
 import { TtlLruCache } from "../src/core/cache.js";
@@ -109,6 +114,49 @@ test("shortHash is stable and compact", () => {
   assert.equal(shortHash("abc"), shortHash("abc"));
   assert.notEqual(shortHash("abc"), shortHash("abd"));
   assert.match(shortHash("0x1,0x2"), /^[0-9a-z]+$/);
+});
+
+test("bootstrap keys removed from env are revoked; re-adding re-enables", () => {
+  const db = getDb(join(tmpdir(), `hypersignal-test-${Date.now()}.db`));
+  upsertKey(db, "hashA", "pro", "pro-bootstrap");
+  upsertKey(db, "hashB", "pro", "pro-bootstrap");
+  upsertKey(db, "hashC", "pro", "manual"); // non-bootstrap must never be touched
+
+  // env now only contains hashA -> hashB revoked, hashC untouched
+  const revoked = disableMissingBootstrapKeys(db, ["hashA"]);
+  assert.equal(revoked, 1);
+  assert.equal(getKey(db, "hashA")?.disabled, 0);
+  assert.equal(getKey(db, "hashB")?.disabled, 1);
+  assert.equal(getKey(db, "hashC")?.disabled, 0);
+
+  // re-adding hashB to env re-enables it via upsert
+  upsertKey(db, "hashB", "pro", "pro-bootstrap");
+  assert.equal(getKey(db, "hashB")?.disabled, 0);
+});
+
+test("snapshot store caps total keys (memory bound)", () => {
+  const s = new InMemorySnapshotStore();
+  for (let i = 0; i < 5_010; i++) s.record("cap", `k${i}`, { v: i });
+  const keys = s.keys("cap");
+  assert.ok(keys.length <= 5_000, `expected <=5000 keys, got ${keys.length}`);
+  assert.ok(keys.includes("k5009")); // newest survive, oldest evicted
+  assert.ok(!keys.includes("k0"));
+});
+
+test("closePosition refuses submitting against a foreign address", async () => {
+  const pk = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"; // Hardhat #0 (test-only)
+  const config = {
+    tradingEnabled: true,
+    agentPrivateKey: pk,
+    builder: { address: undefined, feeTenthsBps: 5 },
+    network: "testnet",
+  } as unknown as Config;
+  const svc = new TradingService(config, {} as HyperliquidClient);
+  await assert.rejects(
+    // foreign address + confirm + live mode must be rejected BEFORE any network I/O
+    svc.closePosition("BTC", { confirm: true, dryRun: false }, "0x1111111111111111111111111111111111111111"),
+    /agent wallet's own positions/,
+  );
 });
 
 test("clampFee caps at 100 tenths-of-bp and floors negatives", () => {

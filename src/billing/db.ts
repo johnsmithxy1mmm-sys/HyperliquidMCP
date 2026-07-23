@@ -56,9 +56,28 @@ export function upsertKey(database: Database.Database, keyHash: string, tier: Ti
     .prepare(
       `INSERT INTO api_keys (key_hash, tier, label, created_at, disabled)
        VALUES (?, ?, ?, ?, 0)
-       ON CONFLICT(key_hash) DO UPDATE SET tier=excluded.tier, label=excluded.label`,
+       ON CONFLICT(key_hash) DO UPDATE SET tier=excluded.tier, label=excluded.label, disabled=0`,
     )
     .run(keyHash, tier, label ?? null, Date.now());
+}
+
+/**
+ * Revoke env-provisioned keys that are no longer present in the environment.
+ * Only touches rows labeled '%-bootstrap' (keys provisioned from env), so keys
+ * added through other channels are never mass-disabled. Returns rows changed.
+ */
+export function disableMissingBootstrapKeys(database: Database.Database, presentHashes: string[]): number {
+  if (presentHashes.length === 0) {
+    return database.prepare(`UPDATE api_keys SET disabled=1 WHERE label LIKE '%-bootstrap' AND disabled=0`).run()
+      .changes;
+  }
+  const placeholders = presentHashes.map(() => "?").join(",");
+  return database
+    .prepare(
+      `UPDATE api_keys SET disabled=1
+       WHERE label LIKE '%-bootstrap' AND disabled=0 AND key_hash NOT IN (${placeholders})`,
+    )
+    .run(...presentHashes).changes;
 }
 
 export function getKey(database: Database.Database, keyHash: string): KeyRow | undefined {

@@ -10,7 +10,7 @@ import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { Config } from "../config.js";
 import { PaymentRequiredError } from "../core/errors.js";
-import { getDb, getKey, incrementUsage, monthlyTotal, upsertKey } from "./db.js";
+import { getDb, getKey, incrementUsage, monthlyTotal, upsertKey, disableMissingBootstrapKeys } from "./db.js";
 import { tierFor, TIERS, type TierName } from "./tiers.js";
 import { buildPaymentRequirements, verifyPayment } from "./x402.js";
 import { log } from "../logger.js";
@@ -34,15 +34,25 @@ export class BillingService {
     }
   }
 
-  /** Upsert operator-provisioned keys from env (comma-separated raw keys). */
+  /**
+   * Sync env-provisioned keys (comma-separated raw keys) into SQLite.
+   * The env is the source of truth for bootstrap keys: keys REMOVED from the
+   * env are revoked (disabled) — otherwise a "revoked" key would keep working
+   * forever from a previous startup's upsert.
+   */
   private bootstrapKeysFromEnv(): void {
+    const present: string[] = [];
     const provision = (raw: string | undefined, tier: TierName) => {
       for (const k of (raw ?? "").split(",").map((s) => s.trim()).filter(Boolean)) {
-        upsertKey(this.db, this.hash(k), tier, `${tier}-bootstrap`);
+        const h = this.hash(k);
+        upsertKey(this.db, h, tier, `${tier}-bootstrap`);
+        present.push(h);
       }
     };
     provision(process.env.HYPERSIGNAL_PRO_KEYS, "pro");
     provision(process.env.HYPERSIGNAL_FREE_KEYS, "free");
+    const revoked = disableMissingBootstrapKeys(this.db, present);
+    if (revoked > 0) log.info("revoked bootstrap keys removed from env", { revoked });
   }
 
   private hash(rawKey: string): string {

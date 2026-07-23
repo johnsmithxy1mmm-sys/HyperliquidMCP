@@ -51,7 +51,8 @@ requires `HL_ENABLE_TRADING=true` + `HL_AGENT_PRIVATE_KEY` (env only) + `confirm
 ## Install
 
 ### Requirements
-Node ≥ 20. `npm install && npm run build`.
+Node **20 or 22 LTS** (Node 24 has no prebuilt `better-sqlite3` binaries and requires a C++ toolchain — use LTS).
+`npm install && npm run build`.
 
 ### Local (stdio) — free + trading, for Claude Desktop / Claude Code / Cursor
 
