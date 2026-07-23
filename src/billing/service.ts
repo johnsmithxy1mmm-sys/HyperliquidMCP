@@ -22,10 +22,16 @@ export interface RequestAuth {
 
 export class BillingService {
   private readonly db: Database.Database;
+  /** x402 is only operable with a payout address; otherwise it must stay off. */
+  private readonly x402Ready: boolean;
 
   constructor(private readonly config: Config) {
     this.db = getDb(config.dbPath);
     this.bootstrapKeysFromEnv();
+    this.x402Ready = config.x402.enabled && Boolean(config.x402.payTo);
+    if (config.x402.enabled && !this.x402Ready) {
+      log.warn("x402 enabled but X402_PAY_TO is not set; x402 flow disabled (would pay to zero address)");
+    }
   }
 
   /** Upsert operator-provisioned keys from env (comma-separated raw keys). */
@@ -70,7 +76,7 @@ export class BillingService {
       }
 
       // Fall back to x402 pay-per-call.
-      if (this.config.x402.enabled) {
+      if (this.x402Ready) {
         const requirements = buildPaymentRequirements(this.config, toolName);
         const result = await verifyPayment(this.config, this.db, auth.xPayment, requirements);
         if (result.ok) {

@@ -104,3 +104,13 @@ function trimZeros(s: string): string {
   if (!s.includes(".")) return s;
   return s.replace(/\.?0+$/, "");
 }
+
+/**
+ * Builder fee (tenths of a bp) -> exact percent string for approveBuilderFee.
+ * Avoids float artifacts: 7 * 0.001 === 0.007000000000000001 would produce a
+ * malformed maxFeeRate. f=5 -> "0.005%", f=100 -> "0.1%", f=0 -> "0%".
+ */
+export function feeRateToPercentString(fTenthsBps: number): string {
+  const pct = fTenthsBps / 1000;
+  return `${trimZeros(pct.toFixed(6))}%`;
+}

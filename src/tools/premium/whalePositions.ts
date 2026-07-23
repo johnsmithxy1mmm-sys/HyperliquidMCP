@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { ToolDef } from "../registry.js";
 import { resolveCohort } from "../../hl/cohort.js";
 import { fetchCohortAccounts, aggregateByCoin, ANALYTICS_DISCLAIMER } from "../../hl/whales.js";
-import { round } from "../../core/format.js";
+import { round, shortHash } from "../../core/format.js";
 
 export const whalePositions: ToolDef = {
   name: "hl_whale_positions",
@@ -41,7 +41,7 @@ export const whalePositions: ToolDef = {
     // change vs 1h / 24h using snapshot store, keyed per coin+cohort.
     const cohortKey = cohort.addresses.slice().sort().join(",");
     const enriched = coins.map((c) => {
-      const key = `${c.coin}:${hash(cohortKey)}`;
+      const key = `${c.coin}:${shortHash(cohortKey)}`;
       const snap1h = ctx.snapshots.nearest("whalePositions", key, 3_600_000, 1_800_000);
       const snap24h = ctx.snapshots.nearest("whalePositions", key, 86_400_000, 6 * 3_600_000);
       ctx.snapshots.record("whalePositions", key, { netNtlUsd: c.netNtlUsd }, now);
@@ -76,10 +76,4 @@ function delta(current: number, prev: unknown): number | null {
     return round(current - Number((prev as { netNtlUsd: number }).netNtlUsd), 2);
   }
   return null;
-}
-
-function hash(s: string): string {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
-  return (h >>> 0).toString(36);
 }

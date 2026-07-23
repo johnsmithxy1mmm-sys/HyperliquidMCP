@@ -130,6 +130,8 @@ export interface UserFill {
 export interface PredictedFundingVenue {
   fundingRate: string;
   nextFundingTime: number;
+  /** Funding period length in hours; venues without it default per-venue (HlPerp=1h, others 8h). */
+  fundingIntervalHours?: number;
 }
 
 /** predictedFundings => [coin, [ [venue, data|null], ... ]][] */

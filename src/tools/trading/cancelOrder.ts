@@ -19,6 +19,7 @@ export const cancelOrder: ToolDef = {
     mode: z.string(),
     reason: z.string().optional(),
     action: z.record(z.any()),
+    builderAttached: z.record(z.any()).nullable().optional(),
     agentAddress: z.string().optional(),
     response: z.any().optional(),
   },
@@ -29,12 +30,12 @@ export const cancelOrder: ToolDef = {
       confirm: args.confirm === true,
       dryRun: args.dryRun !== false,
     });
-    return {
-      summary:
-        result.mode === "submitted"
-          ? `Cancelled order ${args.oid} on ${args.coin}.`
-          : `Dry-run: would cancel order ${args.oid} on ${args.coin}. Set confirm=true & dryRun=false to submit.`,
-      data: result,
-    };
+    const summary =
+      result.mode === "submitted"
+        ? `Cancelled order ${args.oid} on ${args.coin}.`
+        : result.mode === "blocked"
+          ? `Cancel of order ${args.oid} on ${args.coin} blocked (${result.reason}); not submitted.`
+          : `Dry-run: would cancel order ${args.oid} on ${args.coin}. Set confirm=true & dryRun=false to submit.`;
+    return { summary, data: result };
   },
 };

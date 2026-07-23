@@ -34,9 +34,11 @@ export interface PageResult<T> {
   nextOffset: number | null;
 }
 
-export function paginate<T>(all: T[], offset: number, limit: number): PageResult<T> {
-  const start = Math.max(0, Math.floor(offset));
-  const lim = Math.max(1, Math.floor(limit));
+export function paginate<T>(all: T[], offset?: number, limit?: number): PageResult<T> {
+  // NaN/undefined-safe: callers outside the SDK validation path (e.g. Apify) may
+  // pass unset values; degrade to sane defaults instead of a NaN slice.
+  const start = Number.isFinite(offset as number) ? Math.max(0, Math.floor(offset as number)) : 0;
+  const lim = Number.isFinite(limit as number) ? Math.max(1, Math.floor(limit as number)) : 50;
   const items = all.slice(start, start + lim);
   const nextOffset = start + lim < all.length ? start + lim : null;
   return { items, total: all.length, offset: start, limit: lim, nextOffset };
@@ -53,6 +55,13 @@ export function annualizeHourlyFunding(hourlyRate: number): number {
 /** Compact percentage string for text summaries. */
 export function pct(fraction: number, dp = 2): string {
   return `${round(fraction * 100, dp)}%`;
+}
+
+/** Stable short hash for cache/snapshot keys (not cryptographic). */
+export function shortHash(s: string): string {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
 }
 
 /** Sharpe from a series of per-period returns (unannualized ratio). */

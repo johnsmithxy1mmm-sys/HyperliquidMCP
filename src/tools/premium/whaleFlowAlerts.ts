@@ -2,13 +2,17 @@ import { z } from "zod";
 import type { ToolDef } from "../registry.js";
 import { resolveCohort } from "../../hl/cohort.js";
 import { fetchCohortAccounts, aggregateByCoin, ANALYTICS_DISCLAIMER } from "../../hl/whales.js";
-import { round } from "../../core/format.js";
+import { round, shortHash } from "../../core/format.js";
 
 /**
  * Detects large net-notional moves in the cohort's coin-level positioning since
  * the last observed snapshot within the lookback window. Requires prior
  * snapshots (built up as the tool is called over time); on a cold cache it
  * seeds the baseline and reports that no prior baseline existed.
+ *
+ * Coins the cohort has FULLY exited are detected too: prior snapshots whose
+ * coin is absent from the current aggregate are compared against zero, so
+ * "whale closed everything" fires an alert instead of vanishing silently.
  */
 export const whaleFlowAlerts: ToolDef = {
   name: "hl_whale_flow_alerts",
@@ -16,7 +20,8 @@ export const whaleFlowAlerts: ToolDef = {
   title: "Whale flow alerts (recent large moves)",
   description:
     "Recent large changes in whale cohort positioning: which coins saw net long/short notional shift beyond a USD " +
-    "threshold within a lookback window — 'who opened/closed what in the last hour'. Seeds a baseline on first call. " +
+    "threshold within a lookback window — 'who opened/closed what in the last hour'. Detects full exits. " +
+    "Seeds a baseline on first call. " +
     ANALYTICS_DISCLAIMER,
   inputSchema: {
     cohort: z.array(z.string()).optional().describe("Explicit 0x wallet addresses; else HL_WHALE_ADDRESSES."),
@@ -42,31 +47,51 @@ export const whaleFlowAlerts: ToolDef = {
     const cohort = await resolveCohort(ctx, args.cohort as string[] | undefined, topN);
     const accounts = await fetchCohortAccounts(ctx, cohort.addresses);
     const agg = aggregateByCoin(accounts);
-    const cohortKey = hash(cohort.addresses.slice().sort().join(","));
+    const cohortKey = shortHash(cohort.addresses.slice().sort().join(","));
     const now = Date.now();
 
     const alerts: Array<Record<string, unknown>> = [];
     let baselineFound = false;
-    for (const c of agg.values()) {
-      const key = `${c.coin}:${cohortKey}`;
+
+    const evaluate = (coin: string, key: string, netNow: number, wallets: number, extra: Record<string, unknown>) => {
       const prior = ctx.snapshots.nearest("whaleFlow", key, lookbackMs, lookbackMs / 2);
-      ctx.snapshots.record("whaleFlow", key, { netNtlUsd: c.netNtlUsd, longNtlUsd: c.longNtlUsd, shortNtlUsd: c.shortNtlUsd }, now);
-      if (!prior) continue;
+      ctx.snapshots.record("whaleFlow", key, { netNtlUsd: netNow, ...extra }, now);
+      if (!prior) return;
       baselineFound = true;
-      const prev = prior.value as { netNtlUsd: number };
-      const change = c.netNtlUsd - Number(prev.netNtlUsd);
+      const prevNet = Number((prior.value as { netNtlUsd: number }).netNtlUsd);
+      const change = netNow - prevNet;
       if (Math.abs(change) >= thresholdUsd) {
         alerts.push({
-          coin: c.coin,
+          coin,
           changeUsd: round(change, 2),
           direction: change > 0 ? "net_long_increase" : "net_short_increase",
-          netNtlUsdNow: c.netNtlUsd,
-          netNtlUsdPrev: round(Number(prev.netNtlUsd), 2),
-          wallets: c.wallets,
+          netNtlUsdNow: round(netNow, 2),
+          netNtlUsdPrev: round(prevNet, 2),
+          wallets,
+          fullyClosed: netNow === 0,
           ageMinutes: round((now - prior.at) / 60_000, 1),
         });
       }
+    };
+
+    // Coins the cohort currently holds.
+    for (const c of agg.values()) {
+      evaluate(c.coin, `${c.coin}:${cohortKey}`, c.netNtlUsd, c.wallets, {
+        longNtlUsd: c.longNtlUsd,
+        shortNtlUsd: c.shortNtlUsd,
+      });
     }
+
+    // Coins with prior snapshots that vanished from the aggregate = fully exited.
+    const held = new Set([...agg.keys()]);
+    const suffix = `:${cohortKey}`;
+    for (const key of ctx.snapshots.keys("whaleFlow")) {
+      if (!key.endsWith(suffix)) continue;
+      const coin = key.slice(0, key.length - suffix.length);
+      if (held.has(coin)) continue;
+      evaluate(coin, key, 0, 0, { longNtlUsd: 0, shortNtlUsd: 0 });
+    }
+
     alerts.sort((a, b) => Math.abs(Number(b.changeUsd)) - Math.abs(Number(a.changeUsd)));
 
     return {
@@ -84,9 +109,3 @@ export const whaleFlowAlerts: ToolDef = {
     };
   },
 };
-
-function hash(s: string): string {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
-  return (h >>> 0).toString(36);
-}

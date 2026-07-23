@@ -13,6 +13,8 @@ export interface SnapshotStore {
   record(ns: string, key: string, value: unknown, at?: number): void;
   /** Snapshot whose age is closest to `targetAgeMs`, within `toleranceMs`. */
   nearest(ns: string, key: string, targetAgeMs: number, toleranceMs: number): Snapshot | undefined;
+  /** All keys currently tracked under a namespace (for detecting vanished entities). */
+  keys(ns: string): string[];
 }
 
 const MAX_AGE_MS = 26 * 3_600_000;
@@ -51,5 +53,14 @@ export class InMemorySnapshotStore implements SnapshotStore {
       }
     }
     return best && bestDiff <= toleranceMs ? best : undefined;
+  }
+
+  keys(ns: string): string[] {
+    const prefix = `${ns}::`;
+    const out: string[] = [];
+    for (const k of this.series.keys()) {
+      if (k.startsWith(prefix)) out.push(k.slice(prefix.length));
+    }
+    return out;
   }
 }

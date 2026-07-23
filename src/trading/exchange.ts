@@ -9,7 +9,8 @@ import type { HyperliquidClient } from "../core/hlClient.js";
 import { resolveMarket } from "../hl/markets.js";
 import { postJson } from "../core/http.js";
 import { ToolError } from "../core/errors.js";
-import { signL1Action, addressForKey, formatSize, formatPrice } from "./signing.js";
+import { isAddress } from "../core/format.js";
+import { signL1Action, addressForKey, formatSize, formatPrice, feeRateToPercentString } from "./signing.js";
 import { log } from "../logger.js";
 
 export interface OrderParams {
@@ -46,14 +47,30 @@ export interface ExecResult {
 }
 
 export class TradingService {
+  /** Last nonce issued — keeps nonces strictly increasing even within one ms. */
+  private lastNonce = 0;
+
   constructor(
     private readonly config: Config,
     private readonly hl: HyperliquidClient,
   ) {}
 
   private builder(): { b: string; f: number } | null {
-    if (!this.config.builder.address) return null;
-    return { b: this.config.builder.address.toLowerCase(), f: this.config.builder.feeTenthsBps };
+    const addr = this.config.builder.address;
+    if (!addr) return null;
+    if (!isAddress(addr)) {
+      throw new ToolError(
+        "invalid_builder_address",
+        `HL_BUILDER_ADDRESS "${addr}" is not a valid 0x address; fix the env var or unset it.`,
+      );
+    }
+    return { b: addr.toLowerCase(), f: this.config.builder.feeTenthsBps };
+  }
+
+  private nextNonce(): number {
+    const nonce = Math.max(Date.now(), this.lastNonce + 1);
+    this.lastNonce = nonce;
+    return nonce;
   }
 
   private canSubmit(): { ok: boolean; reason?: string } {
@@ -83,6 +100,20 @@ export class TradingService {
       r: params.reduceOnly,
       t: { limit: { tif } },
     };
+
+    // Reject orders that degrade to nonsense after wire formatting.
+    if (!(Number(order.s) > 0)) {
+      throw new ToolError(
+        "size_too_small",
+        `Size ${params.sz} rounds to 0 at ${market.szDecimals} size decimals for ${market.coin}. Increase the size.`,
+        { coin: market.coin, szDecimals: market.szDecimals },
+      );
+    }
+    if (!(Number(order.p) > 0)) {
+      throw new ToolError("invalid_price", `Computed price "${order.p}" for ${market.coin} is not positive.`, {
+        coin: market.coin,
+      });
+    }
 
     const builder = this.builder();
     // Key order matters for msgpack determinism: type, orders, grouping, [builder].
@@ -135,7 +166,7 @@ export class TradingService {
       return { mode: "blocked", reason: gate.reason, action, builderAttached: builder };
     }
 
-    const nonce = Date.now();
+    const nonce = this.nextNonce();
     const isMainnet = this.config.network === "mainnet";
     const signature = await signL1Action(this.config.agentPrivateKey as string, action, nonce, isMainnet, null);
     const agentAddress = addressForKey(this.config.agentPrivateKey as string);
@@ -144,7 +175,9 @@ export class TradingService {
     log.info("submitting exchange action", { type: action.type, agentAddress });
     const response = await postJson<unknown>(this.config.exchangeBaseUrl, payload, {
       timeoutMs: this.config.requestTimeoutMs,
-      maxRetries: 1, // do not blindly retry order submission
+      // NEVER retry submissions: a timeout may mean the order actually landed,
+      // and a retry would double-submit. The caller re-checks state instead.
+      maxRetries: 0,
     });
 
     return { mode: "submitted", action, builderAttached: builder, agentAddress, response };
@@ -165,13 +198,13 @@ export class TradingService {
         "No builder address configured. Set HL_BUILDER_ADDRESS to generate the approveBuilderFee payload.",
       );
     }
-    // f is tenths-of-a-bp; percent = f * 0.001.
-    const maxFeeRate = `${builder.f * 0.001}%`;
+    // f is tenths-of-a-bp; percent string built exactly (no float artifacts).
+    const maxFeeRate = feeRateToPercentString(builder.f);
     const action = {
       type: "approveBuilderFee",
       maxFeeRate,
       builder: builder.b,
-      nonce: Date.now(),
+      nonce: this.nextNonce(),
     };
     return {
       action,

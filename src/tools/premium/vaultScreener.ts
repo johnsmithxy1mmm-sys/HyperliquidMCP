@@ -80,8 +80,16 @@ export const vaultScreener: ToolDef = {
       }),
     );
 
+    // Map sort names to the actual metric field names.
+    const SORT_FIELD: Record<string, string> = {
+      apr: "aprPct",
+      sharpe: "sharpe",
+      sortino: "sortino",
+      tvl: "tvlUsd",
+      maxDrawdown: "maxDrawdownPct",
+    };
     results.sort((a, b) => {
-      const key = sort === "maxDrawdown" ? "maxDrawdownPct" : sort;
+      const key = SORT_FIELD[sort];
       const av = Number(a[key] ?? 0);
       const bv = Number(b[key] ?? 0);
       return sort === "maxDrawdown" ? av - bv : bv - av; // lower drawdown is better

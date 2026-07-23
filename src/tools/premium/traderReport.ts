@@ -15,7 +15,8 @@ export const traderReport: ToolDef = {
   title: "Trader report",
   description:
     "Behavioral report for any wallet from its fills: winrate, average R (avg win / avg loss), total realized PnL, " +
-    "PnL curve, holding-time style (scalp vs swing), fees paid, and most-traded coins. Lookback in days. " +
+    "PnL curve, holding-time style (scalp vs swing), fees paid, and most-traded coins. Lookback in days " +
+    "(the API caps at the ~2000 most recent fills in the window, so very active wallets are partially sampled). " +
     ANALYTICS_DISCLAIMER,
   inputSchema: {
     address: z.string().describe("EVM 0x address."),

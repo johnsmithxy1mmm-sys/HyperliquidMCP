@@ -5,8 +5,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { formatPrice, formatSize, actionHash, signL1Action, addressForKey } from "../src/trading/signing.js";
-import { sharpe, sortino, maxDrawdown, annualizeHourlyFunding, paginate, round } from "../src/core/format.js";
+import {
+  formatPrice,
+  formatSize,
+  actionHash,
+  signL1Action,
+  addressForKey,
+  feeRateToPercentString,
+} from "../src/trading/signing.js";
+import { sharpe, sortino, maxDrawdown, annualizeHourlyFunding, paginate, round, shortHash } from "../src/core/format.js";
 import { aggregateByCoin, type CohortAccount } from "../src/hl/whales.js";
 import { clampFee } from "../src/config.js";
 import { TtlLruCache } from "../src/core/cache.js";
@@ -60,6 +67,27 @@ test("paginate slices and reports nextOffset", () => {
   assert.equal(paginate([1, 2, 3], 2, 5).nextOffset, null);
 });
 
+test("paginate tolerates undefined/NaN inputs (direct-call path)", () => {
+  const p = paginate([1, 2, 3], undefined, undefined);
+  assert.deepEqual(p.items, [1, 2, 3]);
+  assert.equal(p.nextOffset, null);
+  const q = paginate([1, 2, 3], Number.NaN, Number.NaN);
+  assert.deepEqual(q.items, [1, 2, 3]);
+});
+
+test("feeRateToPercentString has no float artifacts", () => {
+  assert.equal(feeRateToPercentString(5), "0.005%");
+  assert.equal(feeRateToPercentString(7), "0.007%"); // 7*0.001 float bug guard
+  assert.equal(feeRateToPercentString(100), "0.1%");
+  assert.equal(feeRateToPercentString(0), "0%");
+});
+
+test("shortHash is stable and compact", () => {
+  assert.equal(shortHash("abc"), shortHash("abc"));
+  assert.notEqual(shortHash("abc"), shortHash("abd"));
+  assert.match(shortHash("0x1,0x2"), /^[0-9a-z]+$/);
+});
+
 test("clampFee caps at 100 tenths-of-bp and floors negatives", () => {
   assert.equal(clampFee(5), 5);
   assert.equal(clampFee(250), 100);
@@ -101,6 +129,16 @@ test("snapshot store finds nearest within tolerance", () => {
   const near1h = s.nearest("ns", "k", 3_600_000, 600_000);
   assert.deepEqual(near1h?.value, { v: 1 });
   assert.equal(s.nearest("ns", "k", 10 * 3_600_000, 600_000), undefined);
+});
+
+test("snapshot store lists keys per namespace (vanished-coin detection)", () => {
+  const s = new InMemorySnapshotStore();
+  s.record("whaleFlow", "BTC:abc", { v: 1 });
+  s.record("whaleFlow", "ETH:abc", { v: 1 });
+  s.record("other", "SOL:xyz", { v: 1 });
+  assert.deepEqual(s.keys("whaleFlow").sort(), ["BTC:abc", "ETH:abc"]);
+  assert.deepEqual(s.keys("other"), ["SOL:xyz"]);
+  assert.deepEqual(s.keys("empty"), []);
 });
 
 function mkAcct(

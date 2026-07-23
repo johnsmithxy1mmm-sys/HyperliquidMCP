@@ -45,13 +45,16 @@ export class RateLimiter {
 
   /** Acquire `weight` budget units, waiting if necessary. */
   acquire(weight = 1): Promise<void> {
+    // Clamp to [1, capacity]: a weight above capacity could never be satisfied
+    // and would deadlock the queue; non-finite input degrades to 1.
+    const w = Math.min(Number.isFinite(weight) ? Math.max(1, Math.floor(weight)) : 1, this.capacity);
     this.refill();
-    if (this.queue.length === 0 && this.tokens >= weight) {
-      this.tokens -= weight;
+    if (this.queue.length === 0 && this.tokens >= w) {
+      this.tokens -= w;
       return Promise.resolve();
     }
     return new Promise<void>((resolve) => {
-      this.queue.push({ weight, resolve });
+      this.queue.push({ weight: w, resolve });
       this.pump();
     });
   }

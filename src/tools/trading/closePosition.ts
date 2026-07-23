@@ -31,12 +31,12 @@ export const closePosition: ToolDef = {
       { confirm: args.confirm === true, dryRun: args.dryRun !== false },
       args.address as string | undefined,
     );
-    return {
-      summary:
-        result.mode === "submitted"
-          ? `Submitted reduce-only close for ${args.coin}.`
-          : `Dry-run: would close ${args.coin}. Set confirm=true & dryRun=false to submit.`,
-      data: result,
-    };
+    const summary =
+      result.mode === "submitted"
+        ? `Submitted reduce-only close for ${args.coin}.`
+        : result.mode === "blocked"
+          ? `Close of ${args.coin} blocked (${result.reason}); not submitted.`
+          : `Dry-run: would close ${args.coin}. Set confirm=true & dryRun=false to submit.`;
+    return { summary, data: result };
   },
 };

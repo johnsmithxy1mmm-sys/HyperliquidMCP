@@ -4,7 +4,8 @@
  * connected, or dropped, `getMid()` falls back to REST metaAndAssetCtxs.
  *
  * Lazy: the socket only connects on first `ensureConnected()`. stdio quick-use
- * works without ever opening a socket.
+ * works without ever opening a socket. Reconnect timers are unref'd so a
+ * pending reconnect never keeps the process alive on shutdown.
  */
 import WebSocket from "ws";
 import type { Config } from "../config.js";
@@ -16,6 +17,8 @@ export class MidsFeed {
   private mids = new Map<string, number>();
   private connected = false;
   private connecting = false;
+  /** Local shutdown flag — never mutate the shared Config. */
+  private closed = false;
   private reconnectDelay = 1_000;
   private lastMsgAt = 0;
 
@@ -25,13 +28,17 @@ export class MidsFeed {
   ) {}
 
   ensureConnected(): void {
-    if (!this.config.wsEnabled || this.connected || this.connecting) return;
+    if (this.closed || !this.config.wsEnabled || this.connected || this.connecting) return;
     this.connecting = true;
     try {
       const ws = new WebSocket(this.config.wsUrl);
       this.ws = ws;
 
       ws.on("open", () => {
+        if (this.closed) {
+          ws.terminate();
+          return;
+        }
         this.connected = true;
         this.connecting = false;
         this.reconnectDelay = 1_000;
@@ -75,9 +82,10 @@ export class MidsFeed {
       /* noop */
     }
     this.ws = undefined;
-    if (!this.config.wsEnabled) return;
+    if (this.closed || !this.config.wsEnabled) return;
     log.warn("ws dropped, scheduling reconnect", { reason, delay: this.reconnectDelay });
-    setTimeout(() => this.ensureConnected(), this.reconnectDelay);
+    const timer = setTimeout(() => this.ensureConnected(), this.reconnectDelay);
+    timer.unref?.();
     this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30_000);
   }
 
@@ -102,7 +110,7 @@ export class MidsFeed {
   }
 
   close(): void {
-    this.config.wsEnabled = false;
+    this.closed = true;
     try {
       this.ws?.close();
     } catch {

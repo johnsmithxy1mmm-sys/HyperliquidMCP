@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { ToolDef } from "../registry.js";
+import type { HyperliquidClient } from "../../core/hlClient.js";
 import { getMarketRows } from "../../hl/markets.js";
 import { round, paginate } from "../../core/format.js";
 import { ANALYTICS_DISCLAIMER } from "../../hl/whales.js";
@@ -66,7 +67,7 @@ export const fundingScreener: ToolDef = {
 
     let venueSpreads: Array<Record<string, unknown>> = [];
     if (includeVenueSpreads) {
-      venueSpreads = await computeVenueSpreads(ctx);
+      venueSpreads = await computeVenueSpreads(ctx.hl);
     }
 
     const top = page.items[0];
@@ -86,14 +87,23 @@ export const fundingScreener: ToolDef = {
   },
 };
 
-async function computeVenueSpreads(ctx: { hl: { predictedFundings: () => Promise<unknown> } }): Promise<Array<Record<string, unknown>>> {
+async function computeVenueSpreads(hl: HyperliquidClient): Promise<Array<Record<string, unknown>>> {
   try {
-    const pf = (await ctx.hl.predictedFundings()) as Array<[string, Array<[string, { fundingRate: string } | null]>]>;
+    const pf = await hl.predictedFundings();
     const out: Array<Record<string, unknown>> = [];
     for (const [coin, venues] of pf) {
       const rates = venues
-        .map(([venue, data]) => (data ? { venue, hourly: Number(data.fundingRate) } : null))
-        .filter((x): x is { venue: string; hourly: number } => x !== null && Number.isFinite(x.hourly));
+        .map(([venue, data]) => {
+          if (!data) return null;
+          const raw = Number(data.fundingRate);
+          if (!Number.isFinite(raw)) return null;
+          // Normalize to an HOURLY rate: venues report per their own funding
+          // interval (Hyperliquid 1h; most CEX perps 8h). Comparing raw rates
+          // across intervals would overstate 8h venues by up to 8x.
+          const hours = data.fundingIntervalHours ?? (venue === "HlPerp" ? 1 : 8);
+          return { venue, hourly: raw / Math.max(1, hours) };
+        })
+        .filter((x): x is { venue: string; hourly: number } => x !== null);
       if (rates.length < 2) continue;
       rates.sort((a, b) => b.hourly - a.hourly);
       const hi = rates[0];
