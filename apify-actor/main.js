@@ -27,10 +27,14 @@ try {
     throw new Error(`input.tool must be one of: ${EXPORTED.join(", ")}. Got: ${JSON.stringify(tool)}`);
   }
 
-  const url = process.env.MCP_SERVER_URL || "https://hypersmash.fly.dev/mcp";
-  const apiKey = process.env.MCP_API_KEY;
+  // Config resolves from Input first, then env vars. Input works without any
+  // console settings; env vars keep the key hidden from public runs.
+  const url = input.mcpServerUrl || process.env.MCP_SERVER_URL || "https://hypersmash.fly.dev/mcp";
+  const apiKey = input.mcpApiKey || process.env.MCP_API_KEY;
   if (!apiKey) {
-    throw new Error("MCP_API_KEY env var is required. Set it in the Actor's Environment variables (a PRO key on your server).");
+    throw new Error(
+      "API key required. Provide `mcpApiKey` in the input (secret field), or set MCP_API_KEY in the Actor's env vars.",
+    );
   }
 
   const res = await fetch(url, {

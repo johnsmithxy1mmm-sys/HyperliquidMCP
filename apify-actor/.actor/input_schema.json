@@ -32,6 +32,20 @@
       "description": "Tool arguments. E.g. {\"address\":\"0x...\"} for portfolio risk, {\"coin\":\"BTC\"} for Polymarket divergence.",
       "editor": "json",
       "default": {}
+    },
+    "mcpServerUrl": {
+      "title": "MCP server URL",
+      "type": "string",
+      "description": "Your deployed HyperSignal MCP endpoint (leave default unless self-hosting elsewhere).",
+      "editor": "textfield",
+      "default": "https://hypersmash.fly.dev/mcp"
+    },
+    "mcpApiKey": {
+      "title": "MCP API key (PRO)",
+      "type": "string",
+      "description": "A PRO key on your server. Stored encrypted. (Or set MCP_API_KEY as an env var instead to hide it from public runs.)",
+      "editor": "textfield",
+      "isSecret": true
     }
   },
   "required": ["tool"]
