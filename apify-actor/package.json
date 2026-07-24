@@ -1,10 +1,10 @@
 {
   "name": "hypersignal-apify-actor",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
-  "description": "Thin Apify Actor wrapper exposing HyperSignal premium Hyperliquid tools as pay-per-event.",
+  "description": "Thin Apify Actor: proxies to the deployed HyperSignal MCP server and charges pay-per-event.",
   "engines": {
-    "node": ">=20"
+    "node": ">=18"
   },
   "scripts": {
     "start": "node main.js"

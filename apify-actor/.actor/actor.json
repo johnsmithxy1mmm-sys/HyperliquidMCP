@@ -2,7 +2,7 @@
   "actorSpecification": 1,
   "name": "hypersignal-hyperliquid-signals",
   "title": "HyperSignal — Hyperliquid Whale & Risk Signals",
-  "description": "Pay-per-event access to HyperSignal's premium Hyperliquid analytics: whale flow alerts, funding screener, and portfolio risk.",
+  "description": "Pay-per-event access to HyperSignal's premium Hyperliquid analytics: whale flow, funding screener, portfolio risk, smart-money score, and Polymarket divergence.",
   "version": "0.1",
   "meta": {
     "templateId": "node"

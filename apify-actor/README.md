@@ -1,16 +1,26 @@
 # HyperSignal — Apify Actor
 
-Thin **pay-per-event** wrapper around HyperSignal's best-selling premium Hyperliquid tools.
-The analytics core is single-sourced (`../src`, built to `../dist`); this Actor only adapts
-input/output and charges one `premium-call` event per successful run.
+Thin **pay-per-event** proxy to a deployed HyperSignal MCP server. It forwards a
+tool call to your server (with a server-side PRO key) and charges one
+`premium-call` event per successful result. The analytics run on your server —
+this Actor is just the Apify storefront/billing adapter.
 
-## Exposed tools
+## Setup (once)
 
-| `tool` | Purpose | Key arguments |
-|---|---|---|
-| `hl_whale_flow_alerts` | Recent large whale positioning shifts | `cohort` (0x addresses) or env `HL_WHALE_ADDRESSES`, `thresholdUsd`, `lookbackMinutes` |
-| `hl_funding_screener` | Annualized funding screen + venue spreads | `minAbsApr`, `minOpenInterestUsd`, `side` |
-| `hl_portfolio_risk` | Risk report for an address | `address` (required), `shocks` |
+In the Actor's **Settings → Environment variables** on Apify, add:
+
+| Variable | Value |
+|---|---|
+| `MCP_SERVER_URL` | your server, e.g. `https://hypersmash.fly.dev/mcp` |
+| `MCP_API_KEY` | a PRO key on your server (kept server-side; users never see it) |
+
+Then in **Monetization**, enable pay-per-event and set the price of the
+`premium-call` event.
+
+## Exposed tools (input `tool`)
+
+`hl_funding_screener`, `hl_whale_positions`, `hl_whale_flow_alerts`,
+`hl_smart_money_score`, `hl_portfolio_risk`, `hl_polymarket_divergence`.
 
 ## Input
 
@@ -20,7 +30,7 @@ input/output and charges one `premium-call` event per successful run.
 
 ## Output
 
-Pushed to the default dataset and to `OUTPUT` key-value record:
+Pushed to the default dataset and the `OUTPUT` key-value record:
 
 ```json
 { "tool": "hl_portfolio_risk", "summary": "...", "data": { /* structuredContent */ } }
@@ -28,11 +38,7 @@ Pushed to the default dataset and to `OUTPUT` key-value record:
 
 ## Deploy
 
-From `apify-actor/` with build context at the repo root:
-
 ```bash
 apify push
 ```
-
-Set the `premium-call` event price in the Actor's monetization settings.
-`HL_WHALE_ADDRESSES` / `HL_LEADERBOARD_URL` can be provided as Actor environment variables.
+(run from this `apify-actor/` folder)

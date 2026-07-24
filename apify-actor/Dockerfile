@@ -1,20 +1,16 @@
-# Apify Actor image. Build context = repo root of hypersignal-mcp/ so we can
-# build the core and reuse it (single source of truth). Deploy with:
-#   apify push   (run from apify-actor/, with build context set to ../)
-FROM node:20-slim
+# Self-contained Apify Actor image. Build context is the apify-actor/ folder
+# (what `apify push` provides), so it copies ONLY files from here — no parent
+# monorepo build. The analytics run on your deployed MCP server; this Actor
+# just proxies to it and charges per event.
+FROM apify/actor-node:20
 
-WORKDIR /app
+# Install deps first for layer caching.
+COPY package.json ./
+RUN npm --quiet set progress=false \
+ && npm install --omit=dev --no-audit --no-fund \
+ && echo "Installed dependencies:" && (npm ls --omit=dev || true)
 
-# Build the core package (produces ../dist consumed by the actor).
-COPY package.json package-lock.json* tsconfig.json ./
-COPY src ./src
-RUN npm install --no-audit --no-fund && npm run build && npm prune --omit=dev
-
-# Actor wrapper.
-WORKDIR /app/apify-actor
-COPY apify-actor/package.json ./
-RUN npm install --no-audit --no-fund
-COPY apify-actor/main.js ./
-COPY apify-actor/.actor ./.actor
+# Copy the rest of the actor (main.js, .actor/).
+COPY . ./
 
 CMD ["node", "main.js"]

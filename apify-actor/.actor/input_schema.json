@@ -8,14 +8,28 @@
       "type": "string",
       "description": "Which premium signal to run.",
       "editor": "select",
-      "enum": ["hl_whale_flow_alerts", "hl_funding_screener", "hl_portfolio_risk"],
-      "enumTitles": ["Whale flow alerts", "Funding screener", "Portfolio risk"],
+      "enum": [
+        "hl_funding_screener",
+        "hl_whale_positions",
+        "hl_whale_flow_alerts",
+        "hl_smart_money_score",
+        "hl_portfolio_risk",
+        "hl_polymarket_divergence"
+      ],
+      "enumTitles": [
+        "Funding screener",
+        "Whale positions",
+        "Whale flow alerts",
+        "Smart-money score",
+        "Portfolio risk",
+        "Polymarket divergence"
+      ],
       "default": "hl_funding_screener"
     },
     "arguments": {
       "title": "Arguments",
       "type": "object",
-      "description": "Tool arguments (see README). E.g. {\"address\":\"0x...\"} for portfolio risk, or {\"cohort\":[\"0x...\"]} for whale alerts.",
+      "description": "Tool arguments. E.g. {\"address\":\"0x...\"} for portfolio risk, {\"coin\":\"BTC\"} for Polymarket divergence.",
       "editor": "json",
       "default": {}
     }
