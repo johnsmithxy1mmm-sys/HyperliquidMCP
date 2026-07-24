@@ -94,6 +94,19 @@ async function main(): Promise<void> {
     res.json({ ok: true, server: SERVER_NAME, version: SERVER_VERSION, network: config.network });
   });
 
+  // Friendly landing on the root so platform health checks / browsers get a
+  // 200 with orientation instead of a bare 404 (the MCP endpoint is POST /mcp).
+  app.get("/", (_req: Request, res: Response) => {
+    res.json({
+      server: SERVER_NAME,
+      version: SERVER_VERSION,
+      status: "ok",
+      description: "Monetized MCP server for Hyperliquid analytics & signals.",
+      endpoints: { health: "GET /healthz", mcp: `POST ${config.httpPath}` },
+      hint: "Connect an MCP client to the /mcp endpoint (Streamable HTTP). Free tools need no key; premium tools require X-API-Key or x402.",
+    });
+  });
+
   app.post(config.httpPath, async (req: Request, res: Response) => {
     const apiKey = headerStr(req, "x-api-key") ?? bearer(req);
     const xPayment = headerStr(req, "x-payment");
