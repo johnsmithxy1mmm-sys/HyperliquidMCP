@@ -30,6 +30,8 @@ import type { TraderProfile } from "../src/smartmoney/profile.js";
 import { cosineSimilarity, detectCoordination, type WalletVector } from "../src/smartmoney/coordination.js";
 import { normCdf, annualizedVol, probAboveAtExpiry, probTouchAbove, probTouchBelow, impliedProbForMode } from "../src/polymarket/pricing.js";
 import { parseThresholdMarket, parseThresholdUsd, yearsToExpiry } from "../src/polymarket/parse.js";
+import BetterSqlite3 from "better-sqlite3";
+import { collectAdminStats, currentPeriod } from "../src/admin/stats.js";
 import { aggregateByCoin, type CohortAccount } from "../src/hl/whales.js";
 import { clampFee } from "../src/config.js";
 import { TtlLruCache } from "../src/core/cache.js";
@@ -370,6 +372,41 @@ test("planTwap never emits non-positive slices, indices contiguous", () => {
   assert.ok(c.every((x) => x.size > 0));
   assert.deepEqual(c.map((x) => x.index), c.map((_, i) => i));
   assert.ok(Math.abs(c.reduce((a, x) => a + x.size, 0) - 0.1) < 1e-9);
+});
+
+test("collectAdminStats aggregates per-key usage, tool totals, and x402 counts", () => {
+  // Fresh in-memory db with just the tables the collector reads — isolated
+  // from the module-level getDb() singleton other tests exercise.
+  const db = new BetterSqlite3(":memory:");
+  db.exec(`
+    CREATE TABLE api_keys (key_hash TEXT PRIMARY KEY, tier TEXT, label TEXT, created_at INTEGER, disabled INTEGER);
+    CREATE TABLE usage_counters (key_hash TEXT, period TEXT, tool TEXT, count INTEGER, PRIMARY KEY (key_hash, period, tool));
+    CREATE TABLE x402_payments (payment_id TEXT PRIMARY KEY, created_at INTEGER);
+  `);
+  const now = Date.now();
+  const period = currentPeriod(now);
+
+  db.prepare(`INSERT INTO api_keys VALUES (?,?,?,?,?)`).run("hashA".padEnd(64, "0"), "pro", "pro-bootstrap", now, 0);
+  db.prepare(`INSERT INTO api_keys VALUES (?,?,?,?,?)`).run("hashB".padEnd(64, "0"), "free", "free-bootstrap", now, 0);
+  db.prepare(`INSERT INTO usage_counters VALUES (?,?,?,?)`).run("hashA".padEnd(64, "0"), period, "hl_funding_screener", 10);
+  db.prepare(`INSERT INTO usage_counters VALUES (?,?,?,?)`).run("hashA".padEnd(64, "0"), period, "hl_whale_positions", 3);
+  db.prepare(`INSERT INTO usage_counters VALUES (?,?,?,?)`).run("hashB".padEnd(64, "0"), period, "hl_funding_screener", 2);
+  db.prepare(`INSERT INTO x402_payments VALUES (?,?)`).run("pay1", now - 86_400_000); // 1 day ago
+  db.prepare(`INSERT INTO x402_payments VALUES (?,?)`).run("pay2", now - 40 * 86_400_000); // 40 days ago (outside 30d window)
+
+  const stats = collectAdminStats(db, period, now);
+
+  assert.equal(stats.totalKeys, 2);
+  assert.equal(stats.totalCallsThisPeriod, 15);
+  assert.equal(stats.toolTotalsThisPeriod[0].tool, "hl_funding_screener");
+  assert.equal(stats.toolTotalsThisPeriod[0].count, 12); // 10 + 2 across both keys
+
+  const keyA = stats.keys.find((k) => k.keyHashPrefix === "hashA".padEnd(64, "0").slice(0, 10));
+  assert.equal(keyA?.callsThisPeriod, 13);
+  assert.equal(keyA?.topTools[0].tool, "hl_funding_screener");
+
+  assert.equal(stats.x402PaymentsTotal, 2);
+  assert.equal(stats.x402PaymentsLast30d, 1); // only pay1 within 30 days
 });
 
 test("closePosition refuses submitting against a foreign address", async () => {
