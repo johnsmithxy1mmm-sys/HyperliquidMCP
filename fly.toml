@@ -1,0 +1,42 @@
+# Fly.io deployment config for HyperSignal MCP.
+# App name matches the deployment you created ("hypersmash"). Rename `app` if
+# you use a different name. Secrets are NOT set here — use `fly secrets set` or
+# the dashboard (never commit keys).
+app = "hypersmash"
+primary_region = "iad"          # change to your nearest: fra, sin, lax, ...
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+  HL_NETWORK = "mainnet"
+  HYPERSIGNAL_DB_PATH = "/app/data/hypersignal.db"
+  HL_WS_ENABLED = "true"
+  TRUST_PROXY = "true"           # Fly passes the real client IP via X-Forwarded-For
+  HTTP_RATE_LIMIT_PER_MIN = "120"
+  ALERT_INTERVAL_SEC = "60"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"     # keep running: alert engine + whale snapshots need uptime
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/healthz"
+
+# SQLite (keys, counters, alerts, signals, snapshots) persists on this volume.
+# Create it once: fly volumes create hypersignal_data --size 1 --region iad --app hypersmash
+[[mounts]]
+  source = "hypersignal_data"
+  destination = "/app/data"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
