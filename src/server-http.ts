@@ -16,6 +16,7 @@ import { Core, buildServer, SERVER_NAME, SERVER_VERSION } from "./server-core.js
 import { BillingService } from "./billing/service.js";
 import { AlertEngine } from "./alerts/engine.js";
 import { CohortRefresher } from "./hl/cohortRefresh.js";
+import { ScoreSampler } from "./smartmoney/scoreSampler.js";
 import type { ToolContext } from "./tools/registry.js";
 import { log } from "./logger.js";
 
@@ -64,6 +65,10 @@ async function main(): Promise<void> {
   // Standing-alert engine: evaluates alerts server-side and builds the track record.
   const cohortCtx = { config, hl: core.hl, store: core.store } as unknown as ToolContext;
   new AlertEngine(core.hl, core.store, core.signer, cohortCtx).start();
+
+  // Samples the server-selected cohort daily so the score calibration keeps
+  // accumulating evidence instead of waiting on customer traffic.
+  new ScoreSampler(cohortCtx).start();
 
   const app = express();
   app.disable("x-powered-by");

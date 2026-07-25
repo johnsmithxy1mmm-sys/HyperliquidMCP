@@ -11,6 +11,7 @@ import { TradingService } from "./trading/exchange.js";
 import { ExecutionRunner } from "./execution/runner.js";
 import { AlertEngine } from "./alerts/engine.js";
 import { CohortRefresher } from "./hl/cohortRefresh.js";
+import { ScoreSampler } from "./smartmoney/scoreSampler.js";
 import type { Tier, ToolContext } from "./tools/registry.js";
 import { log } from "./logger.js";
 
@@ -33,6 +34,11 @@ async function main(): Promise<void> {
   // Standing-alert engine (evaluates local alerts + builds the track record).
   const cohortCtx = { config, hl: core.hl, store: core.store } as unknown as ToolContext;
   new AlertEngine(core.hl, core.store, core.signer, cohortCtx).start();
+
+  // Daily score sample for the local calibration record. The first pass is
+  // minutes out and the timers are unref'd, so a short stdio session never
+  // triggers it; set HL_SCORE_SAMPLE_ENABLED=false to opt out entirely.
+  new ScoreSampler(cohortCtx).start();
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

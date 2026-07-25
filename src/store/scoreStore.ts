@@ -25,6 +25,13 @@ export interface DueSnapshot {
 /** A snapshot is abandoned after this many failed resolution attempts. */
 export const MAX_RESOLVE_ATTEMPTS = 5;
 
+/**
+ * Forward window over which a score's realized PnL outcome is measured.
+ * Shared by the tool and the background sampler: if these ever diverged, the
+ * two would write into different horizons and neither sample would fill up.
+ */
+export const SCORE_HORIZON_DAYS = 30;
+
 export class ScoreStore {
   constructor(private readonly db: Database.Database) {
     db.exec(`
@@ -124,6 +131,24 @@ export class ScoreStore {
   /** Record a failed resolution attempt so the row eventually stops retrying. */
   markAttempt(id: string): void {
     this.db.prepare(`UPDATE score_snapshots SET attempts = attempts + 1 WHERE id = ?`).run(id);
+  }
+
+  /**
+   * Whether a sample already exists for the given UTC day and horizon.
+   *
+   * Lets the background sampler be idempotent across restarts: a server that
+   * reboots five times in a day must not re-walk the whole cohort five times
+   * (the rows would be deduped anyway, but the API calls would not).
+   */
+  hasSampleForDay(horizonDays: number, ts = Date.now()): boolean {
+    const dayStart = Math.floor(ts / 86_400_000) * 86_400_000;
+    const row = this.db
+      .prepare(
+        `SELECT 1 FROM score_snapshots
+         WHERE horizon_days = ? AND ts >= ? AND ts < ? LIMIT 1`,
+      )
+      .get(horizonDays, dayStart, dayStart + 86_400_000);
+    return row !== undefined;
   }
 
   /** Observations abandoned after repeated resolution failures. */

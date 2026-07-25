@@ -34,7 +34,9 @@ import BetterSqlite3 from "better-sqlite3";
 import { collectAdminStats, currentPeriod } from "../src/admin/stats.js";
 import { rankCohort, pnlForWindow } from "../src/hl/cohortRank.js";
 import { calibrate, spearman, rankWithTies, spearmanPValue } from "../src/smartmoney/calibration.js";
-import { ScoreStore, MAX_RESOLVE_ATTEMPTS } from "../src/store/scoreStore.js";
+import { ScoreStore, MAX_RESOLVE_ATTEMPTS, SCORE_HORIZON_DAYS } from "../src/store/scoreStore.js";
+import { ScoreSampler } from "../src/smartmoney/scoreSampler.js";
+import type { ToolContext } from "../src/tools/registry.js";
 import { aggregateByCoin, type CohortAccount } from "../src/hl/whales.js";
 import { clampFee } from "../src/config.js";
 import { TtlLruCache } from "../src/core/cache.js";
@@ -532,6 +534,73 @@ test("score store abandons unresolvable rows instead of blocking the queue", () 
   const remaining = store.due(10, now);
   assert.deepEqual(remaining.map((r) => r.address), ["0xgood"]);
   assert.equal(store.abandoned(), 1);
+});
+
+test("score sampler walks the server cohort once per day and never a caller's", async () => {
+  const db = new BetterSqlite3(":memory:");
+  const scores = new ScoreStore(db);
+  const day = 86_400_000;
+  const now = 100 * day;
+
+  const cohortAddresses = [
+    "0x1111111111111111111111111111111111111111",
+    "0x2222222222222222222222222222222222222222",
+    "0x3333333333333333333333333333333333333333",
+  ];
+  let fillsCalls = 0;
+
+  const ctx = {
+    // No leaderboard configured => resolveCohort must fall back to the env list,
+    // which is a server-selected source and therefore eligible for the sample.
+    config: { whaleAddresses: cohortAddresses, leaderboardUrl: undefined, requestTimeoutMs: 1000 },
+    hl: {
+      userFillsByTime: async () => {
+        fillsCalls++;
+        return [];
+      },
+      clearinghouseState: async () => ({
+        marginSummary: { accountValue: "250000", totalNtlPos: "0", totalRawUsd: "0", totalMarginUsed: "0" },
+        crossMarginSummary: { accountValue: "250000", totalNtlPos: "0", totalRawUsd: "0", totalMarginUsed: "0" },
+        crossMaintenanceMarginUsed: "0",
+        withdrawable: "250000",
+        assetPositions: [],
+      }),
+    },
+    store: { cohort: { get: () => null }, scores },
+  } as unknown as ToolContext;
+
+  const sampler = new ScoreSampler(ctx);
+
+  const first = await sampler.runOnce(now);
+  assert.equal(first.skipped, false);
+  assert.equal(first.sampled, 3);
+  assert.equal(scores.counts().total, 3);
+  assert.equal(fillsCalls, 3);
+
+  // Same UTC day => no second walk, and crucially no repeat API traffic.
+  const second = await sampler.runOnce(now + 3600_000);
+  assert.equal(second.skipped, true);
+  assert.equal(second.reason, "already_sampled_today");
+  assert.equal(fillsCalls, 3);
+
+  // Next day it samples again, into the same horizon the tool writes to.
+  const third = await sampler.runOnce(now + day);
+  assert.equal(third.sampled, 3);
+  assert.equal(scores.counts().total, 6);
+  assert.ok(scores.hasSampleForDay(SCORE_HORIZON_DAYS, now + day));
+});
+
+test("score sampler reports a missing cohort instead of throwing", async () => {
+  const db = new BetterSqlite3(":memory:");
+  const ctx = {
+    config: { whaleAddresses: [], leaderboardUrl: undefined, requestTimeoutMs: 1000 },
+    hl: {},
+    store: { cohort: { get: () => null }, scores: new ScoreStore(db) },
+  } as unknown as ToolContext;
+
+  const res = await new ScoreSampler(ctx).runOnce(0);
+  assert.equal(res.skipped, true);
+  assert.equal(res.sampled, 0);
 });
 
 test("score store dedupes one observation per address per day", () => {

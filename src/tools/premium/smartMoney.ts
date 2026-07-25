@@ -7,9 +7,7 @@ import { scoreTrader } from "../../smartmoney/score.js";
 import { detectCoordination, type WalletVector } from "../../smartmoney/coordination.js";
 import { calibrate } from "../../smartmoney/calibration.js";
 import { round, paginate } from "../../core/format.js";
-
-/** Forward window over which a score's realized PnL outcome is measured. */
-const SCORE_HORIZON_DAYS = 30;
+import { SCORE_HORIZON_DAYS } from "../../store/scoreStore.js";
 
 export const smartMoneyScore: ToolDef = {
   name: "hl_smart_money_score",
