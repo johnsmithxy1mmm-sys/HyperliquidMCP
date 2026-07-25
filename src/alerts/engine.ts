@@ -171,7 +171,9 @@ export class AlertEngine {
         const forwardPnl = fills.reduce((sum, f) => sum + Number(f.closedPnl ?? 0), 0);
         this.store.scores.setOutcome(snap.id, Number.isFinite(forwardPnl) ? forwardPnl : 0, now);
       } catch (err) {
-        // Leave unresolved; it will be retried on a later tick.
+        // Count the failure so a permanently unresolvable address is eventually
+        // abandoned instead of blocking the head of the queue forever.
+        this.store.scores.markAttempt(snap.id);
         log.warn("score outcome resolution failed", { address: snap.address, err: String(err) });
       }
     }

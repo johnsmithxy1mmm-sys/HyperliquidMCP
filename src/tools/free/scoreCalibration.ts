@@ -14,7 +14,9 @@ export const scoreCalibration: ToolDef = {
     "Out-of-sample evidence for whether the hl_smart_money_score actually predicts anything: Spearman rank " +
     "correlation between each wallet's score and the realized PnL it went on to earn over the forward window, " +
     "plus mean forward PnL per score quartile. Verdicts: insufficient_data (not enough resolved observations yet), " +
-    "no_evidence, weak_positive, positive. Read this before treating the score as a forecast.",
+    "inverted (significantly NEGATIVE — higher-scored wallets did worse), no_evidence, weak_positive, positive. " +
+    "Only server-selected cohorts enter the sample, so a caller cannot steer this figure. " +
+    "Read this before treating the score as a forecast.",
   inputSchema: {},
   outputSchema: {
     verdict: z.string(),
@@ -28,7 +30,7 @@ export const scoreCalibration: ToolDef = {
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   run: async (_args, ctx) => {
     const report = calibrate(ctx.store.scores.outcomes());
-    const counts = ctx.store.scores.counts();
+    const counts = { ...ctx.store.scores.counts(), abandoned: ctx.store.scores.abandoned() };
 
     const summary =
       report.verdict === "insufficient_data"

@@ -127,3 +127,12 @@ export function consumePaymentId(database: Database.Database, paymentId: string)
     return false; // primary-key conflict => replay
   }
 }
+
+/**
+ * Undo a reservation made by consumePaymentId when the payment turned out not
+ * to settle. Only call this when settlement is KNOWN to have failed — releasing
+ * on an unknown outcome would re-open the id to a double charge.
+ */
+export function releasePaymentId(database: Database.Database, paymentId: string): void {
+  database.prepare(`DELETE FROM x402_payments WHERE payment_id = ?`).run(paymentId);
+}

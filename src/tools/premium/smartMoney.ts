@@ -67,15 +67,22 @@ export const smartMoneyScore: ToolDef = {
       .sort((a, b) => b.score - a.score);
 
     // Record observations so the score can eventually be validated against
-    // forward results. Without this the product could never substantiate its
-    // central claim. Deduped per wallet/day inside the store.
-    for (const r of ranked) {
-      ctx.store.scores.record({
-        address: r.address,
-        score: r.score,
-        accountValue: r.accountValue,
-        horizonDays: SCORE_HORIZON_DAYS,
-      });
+    // forward results. Deduped per wallet/day inside the store.
+    //
+    // ONLY for server-chosen cohorts. A caller-supplied `cohort` must never
+    // enter the sample: the calibration figure is published, so accepting
+    // arbitrary addresses would let anyone steer the headline statistic by
+    // submitting wallets they have already picked, and would let one caller
+    // grow the table (and its 30-day resolution workload) without bound.
+    if (cohort.source !== "arg") {
+      for (const r of ranked) {
+        ctx.store.scores.record({
+          address: r.address,
+          score: r.score,
+          accountValue: r.accountValue,
+          horizonDays: SCORE_HORIZON_DAYS,
+        });
+      }
     }
     const calibration = calibrate(ctx.store.scores.outcomes());
     const counts = ctx.store.scores.counts();

@@ -13,6 +13,7 @@
 import type Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import type { ScoredOutcome } from "../smartmoney/calibration.js";
+import { log } from "../logger.js";
 
 export interface DueSnapshot {
   id: string;
@@ -20,6 +21,9 @@ export interface DueSnapshot {
   ts: number;
   horizonDays: number;
 }
+
+/** A snapshot is abandoned after this many failed resolution attempts. */
+export const MAX_RESOLVE_ATTEMPTS = 5;
 
 export class ScoreStore {
   constructor(private readonly db: Database.Database) {
@@ -37,6 +41,29 @@ export class ScoreStore {
       CREATE INDEX IF NOT EXISTS idx_score_unresolved ON score_snapshots(resolved_at, ts);
       CREATE INDEX IF NOT EXISTS idx_score_addr_ts ON score_snapshots(address, ts);
     `);
+    // Added after v1.2.0: attempt tracking so one permanently failing address
+    // cannot sit at the head of the queue forever and starve every later row.
+    if (!this.hasColumn("attempts")) {
+      db.exec(`ALTER TABLE score_snapshots ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0`);
+    }
+    // Enforce the per-(address, day, horizon) dedupe in the schema, not just in
+    // the read-then-write in record(): stdio and http can share one DB file.
+    try {
+      db.exec(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_score_dedupe
+          ON score_snapshots(address, horizon_days, ts / 86400000);
+      `);
+    } catch {
+      // A pre-existing DB may already hold duplicates from the read-then-write
+      // path. Dedupe is then best-effort in record(); losing the constraint is
+      // not worth refusing to start over.
+      log.warn("score_snapshots: could not add dedupe index (existing duplicates)");
+    }
+  }
+
+  private hasColumn(name: string): boolean {
+    const cols = this.db.prepare(`PRAGMA table_info(score_snapshots)`).all() as Array<{ name: string }>;
+    return cols.some((c) => c.name === name);
   }
 
   /**
@@ -63,22 +90,48 @@ export class ScoreStore {
 
     this.db
       .prepare(
-        `INSERT INTO score_snapshots (id, address, score, account_value, ts, horizon_days)
+        `INSERT OR IGNORE INTO score_snapshots (id, address, score, account_value, ts, horizon_days)
          VALUES (?, ?, ?, ?, ?, ?)`,
       )
       .run(randomUUID(), input.address, input.score, input.accountValue, ts, input.horizonDays);
   }
 
-  /** Snapshots whose horizon has elapsed and that still need an outcome. */
+  /**
+   * Snapshots whose horizon has elapsed and that still need an outcome.
+   *
+   * Rows that have already failed MAX_RESOLVE_ATTEMPTS times are excluded. The
+   * queue is drained oldest-first with a small limit per tick, so without this
+   * a single permanently unresolvable address (deleted account, malformed
+   * input) would occupy the head of the queue forever and no later observation
+   * would ever be resolved.
+   */
   due(limit = 10, now = Date.now()): DueSnapshot[] {
     const rows = this.db
       .prepare(
         `SELECT id, address, ts, horizon_days FROM score_snapshots
-         WHERE resolved_at IS NULL AND (ts + horizon_days * 86400000) <= ?
-         ORDER BY ts ASC LIMIT ?`,
+         WHERE resolved_at IS NULL AND attempts < ? AND (ts + horizon_days * 86400000) <= ?
+         ORDER BY attempts ASC, ts ASC LIMIT ?`,
       )
-      .all(now, limit) as Array<{ id: string; address: string; ts: number; horizon_days: number }>;
+      .all(MAX_RESOLVE_ATTEMPTS, now, limit) as Array<{
+      id: string;
+      address: string;
+      ts: number;
+      horizon_days: number;
+    }>;
     return rows.map((r) => ({ id: r.id, address: r.address, ts: r.ts, horizonDays: r.horizon_days }));
+  }
+
+  /** Record a failed resolution attempt so the row eventually stops retrying. */
+  markAttempt(id: string): void {
+    this.db.prepare(`UPDATE score_snapshots SET attempts = attempts + 1 WHERE id = ?`).run(id);
+  }
+
+  /** Observations abandoned after repeated resolution failures. */
+  abandoned(): number {
+    const row = this.db
+      .prepare(`SELECT COUNT(*) AS n FROM score_snapshots WHERE resolved_at IS NULL AND attempts >= ?`)
+      .get(MAX_RESOLVE_ATTEMPTS) as { n: number };
+    return row.n;
   }
 
   setOutcome(id: string, forwardPnl: number, resolvedAt = Date.now()): void {

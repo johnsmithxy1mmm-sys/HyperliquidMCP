@@ -20,6 +20,11 @@ import type {
   PerpDexEntry,
 } from "../hl/types.js";
 
+/** Max rows userFillsByTime returns per call (Hyperliquid Info API). */
+const FILLS_PAGE_LIMIT = 2000;
+/** Hard bound on paging so one wallet can never monopolize the weight budget. */
+const FILLS_MAX_PAGES = 10;
+
 export class HyperliquidClient {
   private readonly cache = new TtlLruCache();
   private readonly limiter: RateLimiter;
@@ -114,13 +119,46 @@ export class HyperliquidClient {
     );
   }
 
+  /**
+   * Fills in [startTime, endTime]. The endpoint returns at most
+   * FILLS_PAGE_LIMIT rows per call, so an active wallet over a long window is
+   * silently truncated unless the window is walked forward — which would make
+   * realized-PnL totals (trader stats, score calibration) quietly wrong.
+   * Pages until exhausted, bounded by FILLS_MAX_PAGES.
+   */
   userFillsByTime(user: string, startTime: number, endTime?: number): Promise<UserFill[]> {
-    const body: Record<string, unknown> = { type: "userFillsByTime", user, startTime, aggregateByTime: false };
-    if (endTime !== undefined) body.endTime = endTime;
-    // Not cached long: fills change; short TTL.
     return this.cache.getOrLoad(`fillsT:${user.toLowerCase()}:${startTime}:${endTime ?? "now"}`, TTL.account, () =>
-      this.info<UserFill[]>(body, 4),
+      this.fetchAllFills(user, startTime, endTime),
     );
+  }
+
+  private async fetchAllFills(user: string, startTime: number, endTime?: number): Promise<UserFill[]> {
+    const all: UserFill[] = [];
+    const seen = new Set<string>();
+    let cursor = startTime;
+
+    for (let page = 0; page < FILLS_MAX_PAGES; page++) {
+      const body: Record<string, unknown> = { type: "userFillsByTime", user, startTime: cursor, aggregateByTime: false };
+      if (endTime !== undefined) body.endTime = endTime;
+      const batch = await this.info<UserFill[]>(body, 4);
+      if (!Array.isArray(batch) || batch.length === 0) break;
+
+      // Pages overlap on `time`, so dedupe by the fill's unique id.
+      for (const f of batch) {
+        const id = `${f.tid ?? ""}:${f.hash ?? ""}:${f.time}:${f.coin}:${f.px}:${f.sz}`;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        all.push(f);
+      }
+      if (batch.length < FILLS_PAGE_LIMIT) break;
+
+      const maxTime = batch.reduce((m, f) => Math.max(m, Number(f.time) || 0), 0);
+      // No forward progress (a single millisecond holds a full page) — stop
+      // rather than loop on the same window.
+      if (maxTime <= cursor) break;
+      cursor = maxTime;
+    }
+    return all;
   }
 
   /** Raw escape hatch for aggregation tools that need an uncached, custom Info request. */

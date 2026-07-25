@@ -25,8 +25,13 @@ export interface CalibrationReport {
   pValue: number | null;
   /** Mean forward PnL per score quartile, lowest first. */
   quartiles: Array<{ quartile: number; scoreRange: [number, number]; meanForwardPnl: number; n: number }>;
-  /** Plain-language verdict for API consumers. */
-  verdict: "insufficient_data" | "no_evidence" | "weak_positive" | "positive";
+  /**
+   * Plain-language verdict for API consumers. `inverted` is reported rather
+   * than folded into `no_evidence`: a significant NEGATIVE correlation is a
+   * finding about the score, not an absence of one, and hiding it would be the
+   * same cherry-picking the track record exists to prevent.
+   */
+  verdict: "insufficient_data" | "inverted" | "no_evidence" | "weak_positive" | "positive";
 }
 
 /** Fractional ranks with ties averaged (required for a correct Spearman). */
@@ -83,10 +88,18 @@ function studentTCdf(t: number, df: number): number {
   return 1 - 0.5 * incompleteBeta(x, df / 2, 0.5);
 }
 
-/** Regularized incomplete beta I_x(a,b) — continued fraction (Lentz). */
+/**
+ * Regularized incomplete beta I_x(a,b) — continued fraction (Lentz).
+ *
+ * The continued fraction only converges on x < (a+1)/(a+b+2); outside that
+ * range the identity I_x(a,b) = 1 - I_{1-x}(b,a) must be applied with the
+ * arguments ACTUALLY swapped. Returning `1 - result` from the same unconverged
+ * expansion silently yields the complement of the true value.
+ */
 function incompleteBeta(x: number, a: number, b: number): number {
   if (x <= 0) return 0;
   if (x >= 1) return 1;
+  if (x > (a + 1) / (a + b + 2)) return 1 - incompleteBeta(1 - x, b, a);
   const lbeta = logGamma(a) + logGamma(b) - logGamma(a + b);
   const front = Math.exp(Math.log(x) * a + Math.log(1 - x) * b - lbeta) / a;
 
@@ -109,8 +122,7 @@ function incompleteBeta(x: number, a: number, b: number): number {
     f *= cd;
     if (Math.abs(1 - cd) < 1e-10) break;
   }
-  const result = front * (f - 1);
-  return a > (a + b) / 2 ? 1 - result : result;
+  return front * (f - 1);
 }
 
 /** Lanczos approximation of log Γ(x). */
@@ -161,7 +173,9 @@ export function calibrate(observations: ScoredOutcome[]): CalibrationReport {
 
   let verdict: CalibrationReport["verdict"] = "insufficient_data";
   if (n >= 30 && r !== null) {
-    if (p !== null && p < 0.05 && r > 0.2) verdict = "positive";
+    const significant = p !== null && p < 0.05;
+    if (significant && r > 0.2) verdict = "positive";
+    else if (significant && r < -0.2) verdict = "inverted";
     else if (r > 0.1) verdict = "weak_positive";
     else verdict = "no_evidence";
   }

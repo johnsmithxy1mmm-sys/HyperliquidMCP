@@ -7,9 +7,10 @@
  * Fail-closed: without a facilitator we cannot verify settlement, so payment is
  * treated as unverified (access denied) rather than fabricating success.
  */
+import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { Config } from "../config.js";
-import { consumePaymentId } from "./db.js";
+import { consumePaymentId, releasePaymentId } from "./db.js";
 import { log } from "../logger.js";
 
 /** Base mainnet USDC (6 decimals). Override via X402_ASSET_ADDRESS if needed. */
@@ -93,24 +94,45 @@ export async function verifyPayment(
       return { ok: false, reason: verifyBody.invalidReason ?? `verify_failed_${verifyRes.status}` };
     }
 
-    // Settle on-chain via facilitator.
-    const settleRes = await postWithTimeout(`${base}/settle`, body);
-    const settleBody = (await settleRes.json().catch(() => ({}))) as { success?: boolean; transaction?: string };
-    if (!settleRes.ok || !settleBody.success) {
-      return { ok: false, reason: "settlement_failed" };
+    // Reserve BEFORE settling. Settling first and checking for a replay
+    // afterwards means a caller whose payload we have already seen gets charged
+    // again and then refused — taking money for a call we do not serve.
+    const reservationId = deriveId(payload);
+    if (!consumePaymentId(db, reservationId)) return { ok: false, reason: "payment_replayed" };
+
+    let settleBody: { success?: boolean; transaction?: string };
+    try {
+      const settleRes = await postWithTimeout(`${base}/settle`, body);
+      settleBody = (await settleRes.json().catch(() => ({}))) as { success?: boolean; transaction?: string };
+      if (!settleRes.ok || !settleBody.success) {
+        releasePaymentId(db, reservationId);
+        return { ok: false, reason: "settlement_failed" };
+      }
+    } catch (err) {
+      // Settlement outcome is unknown (timeout, network). Keep the reservation:
+      // re-running settle on the same payload could double-charge, which is
+      // worse than making the caller retry with a fresh payment.
+      log.warn("x402 settle error; reservation kept", { err: String(err) });
+      return { ok: false, reason: "settlement_unconfirmed" };
     }
 
-    const paymentId = settleBody.transaction ?? deriveId(payload);
-    if (!consumePaymentId(db, paymentId)) return { ok: false, reason: "payment_replayed" };
-    return { ok: true, paymentId };
+    return { ok: true, paymentId: settleBody.transaction ?? reservationId };
   } catch (err) {
     log.warn("x402 verify error", { err: String(err) });
     return { ok: false, reason: "facilitator_unreachable" };
   }
 }
 
+/**
+ * Stable id for a payment payload.
+ *
+ * Must hash the WHOLE payload: truncating the JSON to a fixed prefix collides
+ * whenever two payments differ only in fields that serialize late (nonce,
+ * signature), and a collision here rejects a genuine payment as a replay after
+ * the caller has already paid.
+ */
 function deriveId(payload: Record<string, unknown>): string {
-  return JSON.stringify(payload).slice(0, 128);
+  return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
 }
 
 /** Facilitator calls must never hang a request: hard 10s timeout per call. */

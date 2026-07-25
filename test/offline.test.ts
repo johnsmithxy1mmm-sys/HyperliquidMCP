@@ -33,7 +33,8 @@ import { parseThresholdMarket, parseThresholdUsd, yearsToExpiry } from "../src/p
 import BetterSqlite3 from "better-sqlite3";
 import { collectAdminStats, currentPeriod } from "../src/admin/stats.js";
 import { rankCohort, pnlForWindow } from "../src/hl/cohortRank.js";
-import { calibrate, spearman, rankWithTies } from "../src/smartmoney/calibration.js";
+import { calibrate, spearman, rankWithTies, spearmanPValue } from "../src/smartmoney/calibration.js";
+import { ScoreStore, MAX_RESOLVE_ATTEMPTS } from "../src/store/scoreStore.js";
 import { aggregateByCoin, type CohortAccount } from "../src/hl/whales.js";
 import { clampFee } from "../src/config.js";
 import { TtlLruCache } from "../src/core/cache.js";
@@ -471,6 +472,76 @@ test("calibrate is honest when evidence is thin and positive when it is strong",
                  6, 2, 6, 4, 3, 3, 8, 3, 2, 7, 9, 5, 0, 2, 8, 8, 4, 1, 9, 7];
   const flat = calibrate(noise.map((v, i) => ({ score: i, forwardPnl: v })));
   assert.notEqual(flat.verdict, "positive");
+});
+
+test("spearman p-value matches reference values (not their complement)", () => {
+  // Reference two-sided p-values for the Student-t approximation. The earlier
+  // incomplete-beta symmetry handling returned 1-p, which made a significant
+  // result indistinguishable from pure noise and could never reach `positive`.
+  const cases: Array<[number, number, number]> = [
+    [0.5, 30, 0.0049],
+    [0.3, 30, 0.1072],
+    [0.2, 30, 0.2893],
+    [0.8, 12, 0.0018],
+    [0.25, 100, 0.0121],
+    [0.05, 50, 0.7302],
+  ];
+  for (const [r, n, expected] of cases) {
+    const p = spearmanPValue(r, n);
+    assert.ok(p !== null, `p should exist for n=${n}`);
+    assert.ok(
+      Math.abs((p as number) - expected) < Math.max(0.001, expected * 0.05),
+      `r=${r} n=${n}: got ${p}, expected ≈${expected}`,
+    );
+  }
+  assert.equal(spearmanPValue(0.5, 8), null); // n < 10
+  // A p-value must never be reported as the complement of itself.
+  assert.ok((spearmanPValue(0.9, 40) as number) < 0.01);
+});
+
+test("calibrate reports an inverted score instead of hiding it as no_evidence", () => {
+  // Score perfectly ANTI-correlated with outcome: a finding, not an absence.
+  const inverted = Array.from({ length: 40 }, (_, i) => ({ score: i, forwardPnl: -i * 100 }));
+  const report = calibrate(inverted);
+  assert.equal(report.verdict, "inverted");
+  assert.ok((report.spearman ?? 0) < -0.9);
+});
+
+test("score store abandons unresolvable rows instead of blocking the queue", () => {
+  const db = new BetterSqlite3(":memory:");
+  const store = new ScoreStore(db);
+  const day = 86_400_000;
+
+  // A poison row that will never resolve, recorded before a healthy one.
+  store.record({ address: "0xbad", score: 10, accountValue: 1, horizonDays: 1, ts: 1000 });
+  store.record({ address: "0xgood", score: 20, accountValue: 1, horizonDays: 1, ts: 2000 });
+  const now = 5 * day;
+
+  // Oldest-first, so the poison row is served first.
+  const first = store.due(1, now);
+  assert.equal(first[0].address, "0xbad");
+
+  // One failure is enough to send it behind untried rows: ordering is by
+  // attempts before age, so a failing row can never hold the head of the queue.
+  store.markAttempt(first[0].id);
+  assert.equal(store.due(1, now)[0].address, "0xgood");
+
+  // Once its attempt budget is spent it drops out of the queue entirely.
+  const poisonId = first[0].id;
+  for (let i = 1; i < MAX_RESOLVE_ATTEMPTS; i++) store.markAttempt(poisonId);
+  const remaining = store.due(10, now);
+  assert.deepEqual(remaining.map((r) => r.address), ["0xgood"]);
+  assert.equal(store.abandoned(), 1);
+});
+
+test("score store dedupes one observation per address per day", () => {
+  const db = new BetterSqlite3(":memory:");
+  const store = new ScoreStore(db);
+  const day = 86_400_000;
+  store.record({ address: "0xa", score: 1, accountValue: 1, horizonDays: 30, ts: 10 * day });
+  store.record({ address: "0xa", score: 99, accountValue: 1, horizonDays: 30, ts: 10 * day + 3600_000 });
+  store.record({ address: "0xa", score: 2, accountValue: 1, horizonDays: 30, ts: 11 * day });
+  assert.equal(store.counts().total, 2);
 });
 
 test("closePosition refuses submitting against a foreign address", async () => {
