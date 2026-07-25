@@ -15,6 +15,7 @@ import { loadConfig } from "./config.js";
 import { Core, buildServer, SERVER_NAME, SERVER_VERSION } from "./server-core.js";
 import { BillingService } from "./billing/service.js";
 import { AlertEngine } from "./alerts/engine.js";
+import { CohortRefresher } from "./hl/cohortRefresh.js";
 import type { ToolContext } from "./tools/registry.js";
 import { log } from "./logger.js";
 
@@ -56,8 +57,12 @@ async function main(): Promise<void> {
   const core = new Core(config);
   const billing = new BillingService(config);
 
+  // Keeps the whale cohort current without manual curation (no-op unless
+  // HL_LEADERBOARD_URL is set).
+  new CohortRefresher(config, core.store.cohort).start();
+
   // Standing-alert engine: evaluates alerts server-side and builds the track record.
-  const cohortCtx = { config, hl: core.hl } as unknown as ToolContext;
+  const cohortCtx = { config, hl: core.hl, store: core.store } as unknown as ToolContext;
   new AlertEngine(core.hl, core.store, core.signer, cohortCtx).start();
 
   const app = express();

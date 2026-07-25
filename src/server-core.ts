@@ -15,7 +15,7 @@ import type { TradingService } from "./trading/exchange.js";
 import type { ExecutionRunner } from "./execution/runner.js";
 
 export const SERVER_NAME = "hypersignal-mcp";
-export const SERVER_VERSION = "1.1.0";
+export const SERVER_VERSION = "1.2.0";
 
 /** Long-lived singletons shared across requests. */
 export class Core {

@@ -32,6 +32,8 @@ import { normCdf, annualizedVol, probAboveAtExpiry, probTouchAbove, probTouchBel
 import { parseThresholdMarket, parseThresholdUsd, yearsToExpiry } from "../src/polymarket/parse.js";
 import BetterSqlite3 from "better-sqlite3";
 import { collectAdminStats, currentPeriod } from "../src/admin/stats.js";
+import { rankCohort, pnlForWindow } from "../src/hl/cohortRank.js";
+import { calibrate, spearman, rankWithTies } from "../src/smartmoney/calibration.js";
 import { aggregateByCoin, type CohortAccount } from "../src/hl/whales.js";
 import { clampFee } from "../src/config.js";
 import { TtlLruCache } from "../src/core/cache.js";
@@ -407,6 +409,68 @@ test("collectAdminStats aggregates per-key usage, tool totals, and x402 counts",
 
   assert.equal(stats.x402PaymentsTotal, 2);
   assert.equal(stats.x402PaymentsLast30d, 1); // only pay1 within 30 days
+});
+
+test("rankCohort dedupes, filters dust, and ranks by the chosen strategy", () => {
+  const rows = [
+    { ethAddress: "0x" + "a".repeat(40), accountValue: "5000000",
+      windowPerformances: [["month", { pnl: "10000" }], ["allTime", { pnl: "50000" }]] },
+    // dust account with a huge relative PnL — must not outrank the real desk
+    { ethAddress: "0x" + "b".repeat(40), accountValue: "300",
+      windowPerformances: [["month", { pnl: "900000" }]] },
+    { address: "0x" + "c".repeat(40), accountValue: "1000000",
+      windowPerformances: [["month", { pnl: "250000" }]] },
+    { ethAddress: "0x" + "a".repeat(40), accountValue: "5000000" }, // duplicate
+    { ethAddress: "not-an-address", accountValue: "9999999" },      // invalid
+  ];
+
+  const byEquity = rankCohort(rows, { strategy: "accountValue", minAccountValue: 50_000 });
+  assert.deepEqual(byEquity.map((w) => w.address), ["0x" + "a".repeat(40), "0x" + "c".repeat(40)]);
+
+  const byPnl = rankCohort(rows, { strategy: "pnlMonth", minAccountValue: 50_000 });
+  assert.equal(byPnl[0].address, "0x" + "c".repeat(40)); // 250k > 10k
+  assert.ok(!byPnl.some((w) => w.address === "0x" + "b".repeat(40)), "dust must be filtered");
+
+  assert.equal(rankCohort(rows, { topN: 1, minAccountValue: 50_000 }).length, 1);
+});
+
+test("pnlForWindow tolerates missing/misshapen payloads", () => {
+  assert.equal(pnlForWindow({ windowPerformances: [["month", { pnl: "42" }]] }, "month"), 42);
+  assert.equal(pnlForWindow({ windowPerformances: [["day", { pnl: "42" }]] }, "month"), 0);
+  assert.equal(pnlForWindow({}, "month"), 0);
+  assert.equal(pnlForWindow({ windowPerformances: "garbage" }, "month"), 0);
+});
+
+test("rankWithTies averages tied ranks", () => {
+  assert.deepEqual(rankWithTies([10, 20, 20, 30]), [1, 2.5, 2.5, 4]);
+});
+
+test("spearman detects monotone relationships regardless of linearity", () => {
+  const x = [1, 2, 3, 4, 5, 6, 7, 8];
+  assert.equal(spearman(x, x.map((v) => v ** 3)), 1);      // perfectly monotone, non-linear
+  assert.equal(spearman(x, x.map((v) => -v)), -1);
+  assert.equal(spearman([1, 2, 3], [1, 2, 3]), null);      // n < 4
+});
+
+test("calibrate is honest when evidence is thin and positive when it is strong", () => {
+  assert.equal(calibrate([]).verdict, "insufficient_data");
+  assert.equal(calibrate([{ score: 1, forwardPnl: 1 }]).verdict, "insufficient_data");
+
+  // 40 observations where score tracks outcome => should register as positive
+  const strong = Array.from({ length: 40 }, (_, i) => ({ score: i, forwardPnl: i * 100 }));
+  const good = calibrate(strong);
+  assert.equal(good.verdict, "positive");
+  assert.ok((good.spearman ?? 0) > 0.9);
+  assert.ok((good.pValue ?? 1) < 0.05);
+  assert.equal(good.quartiles.length, 4);
+  // quartiles must be ordered lowest-score-first with rising outcomes
+  assert.ok(good.quartiles[3].meanForwardPnl > good.quartiles[0].meanForwardPnl);
+
+  // score unrelated to outcome => must NOT claim predictive power
+  const noise = [3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5, 8, 9, 7, 9, 3, 2, 3, 8, 4,
+                 6, 2, 6, 4, 3, 3, 8, 3, 2, 7, 9, 5, 0, 2, 8, 8, 4, 1, 9, 7];
+  const flat = calibrate(noise.map((v, i) => ({ score: i, forwardPnl: v })));
+  assert.notEqual(flat.verdict, "positive");
 });
 
 test("closePosition refuses submitting against a foreign address", async () => {

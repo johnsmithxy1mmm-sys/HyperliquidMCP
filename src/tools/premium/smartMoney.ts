@@ -5,16 +5,24 @@ import { fetchCohortAccounts, ANALYTICS_DISCLAIMER } from "../../hl/whales.js";
 import { analyzeCohort } from "../../smartmoney/analyze.js";
 import { scoreTrader } from "../../smartmoney/score.js";
 import { detectCoordination, type WalletVector } from "../../smartmoney/coordination.js";
+import { calibrate } from "../../smartmoney/calibration.js";
 import { round, paginate } from "../../core/format.js";
+
+/** Forward window over which a score's realized PnL outcome is measured. */
+const SCORE_HORIZON_DAYS = 30;
 
 export const smartMoneyScore: ToolDef = {
   name: "hl_smart_money_score",
   tier: "premium",
-  title: "Smart-money score & labels",
+  title: "Smart-money screener & labels",
   description:
-    "Rank a cohort of wallets by a smart-money score (risk-adjusted performance + winrate + reward/risk + capital " +
-    "size + activity) and tag each with behavioral labels (whale, sharp, scalper, market_maker_like, high_conviction, " +
-    "underwater, …). Use to find wallets worth watching or copying. Cohort = `cohort` arg or HL_WHALE_ADDRESSES. " +
+    "Rank a cohort of wallets by a composite screening score over their PAST results (risk-adjusted performance, " +
+    "winrate, reward/risk, capital size, activity) and tag each with behavioral labels (whale, sharp, scalper, " +
+    "market_maker_like, high_conviction, underwater, …). " +
+    "IMPORTANT: this is a descriptive screener, NOT a validated predictor — the component weights are chosen by " +
+    "judgement and have not been shown to predict future returns. Check `calibration` in the response for the " +
+    "current out-of-sample evidence, and hl_score_calibration for detail. Use it to shortlist wallets to inspect, " +
+    "not as a forecast. Cohort resolves from `cohort` arg, the auto-refreshed leaderboard cohort, or HL_WHALE_ADDRESSES. " +
     ANALYTICS_DISCLAIMER,
   inputSchema: {
     cohort: z.array(z.string()).optional().describe("0x wallet addresses to score; else HL_WHALE_ADDRESSES."),
@@ -25,9 +33,11 @@ export const smartMoneyScore: ToolDef = {
   },
   outputSchema: {
     source: z.string(),
+    cohortAgeSeconds: z.number().nullable(),
     analyzed: z.number(),
     ranked: z.array(z.record(z.any())),
     nextOffset: z.number().nullable(),
+    calibration: z.record(z.any()),
     disclaimer: z.string(),
   },
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
@@ -56,17 +66,45 @@ export const smartMoneyScore: ToolDef = {
       })
       .sort((a, b) => b.score - a.score);
 
+    // Record observations so the score can eventually be validated against
+    // forward results. Without this the product could never substantiate its
+    // central claim. Deduped per wallet/day inside the store.
+    for (const r of ranked) {
+      ctx.store.scores.record({
+        address: r.address,
+        score: r.score,
+        accountValue: r.accountValue,
+        horizonDays: SCORE_HORIZON_DAYS,
+      });
+    }
+    const calibration = calibrate(ctx.store.scores.outcomes());
+    const counts = ctx.store.scores.counts();
+
     const page = paginate(ranked, args.offset as number, args.limit as number);
     const top = ranked[0];
     return {
       summary:
-        `Scored ${profiles.length}/${cohort.addresses.length} wallets (source=${cohort.source}).` +
-        (top ? ` Top: ${top.address.slice(0, 10)}… score ${top.score} [${top.labels.join(",")}].` : ""),
+        `Screened ${profiles.length}/${cohort.addresses.length} wallets (source=${cohort.source}).` +
+        (top ? ` Top: ${top.address.slice(0, 10)}… score ${top.score} [${top.labels.join(",")}].` : "") +
+        ` Score validation: ${calibration.verdict} (${counts.resolved} resolved of ${counts.total} observations).`,
       data: {
         source: cohort.source,
+        cohortAgeSeconds: cohort.ageSeconds ?? null,
         analyzed: profiles.length,
         ranked: page.items,
         nextOffset: page.nextOffset,
+        calibration: {
+          verdict: calibration.verdict,
+          spearman: calibration.spearman,
+          pValue: calibration.pValue,
+          resolvedObservations: counts.resolved,
+          pendingObservations: counts.pending,
+          horizonDays: SCORE_HORIZON_DAYS,
+          note:
+            calibration.verdict === "insufficient_data"
+              ? "Not yet validated: the score is a descriptive screener over past results, not a proven predictor."
+              : "Spearman rank correlation between score and realized forward PnL over the horizon.",
+        },
         disclaimer: ANALYTICS_DISCLAIMER,
       },
     };

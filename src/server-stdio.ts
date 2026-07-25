@@ -10,6 +10,7 @@ import { Core, buildServer } from "./server-core.js";
 import { TradingService } from "./trading/exchange.js";
 import { ExecutionRunner } from "./execution/runner.js";
 import { AlertEngine } from "./alerts/engine.js";
+import { CohortRefresher } from "./hl/cohortRefresh.js";
 import type { Tier, ToolContext } from "./tools/registry.js";
 import { log } from "./logger.js";
 
@@ -26,8 +27,11 @@ async function main(): Promise<void> {
 
   const server = buildServer(core, { tiers, mode: "stdio", subject: "local", trading, execution });
 
+  // Keeps the whale cohort current (no-op unless HL_LEADERBOARD_URL is set).
+  new CohortRefresher(config, core.store.cohort).start();
+
   // Standing-alert engine (evaluates local alerts + builds the track record).
-  const cohortCtx = { config, hl: core.hl } as unknown as ToolContext;
+  const cohortCtx = { config, hl: core.hl, store: core.store } as unknown as ToolContext;
   new AlertEngine(core.hl, core.store, core.signer, cohortCtx).start();
 
   const transport = new StdioServerTransport();

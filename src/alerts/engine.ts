@@ -121,6 +121,7 @@ export class AlertEngine {
       }
 
       await this.scoreDueSignals(marketByCoin, now);
+      await this.resolveDueScoreOutcomes(now);
       return fired;
     } catch (err) {
       log.warn("alert tick failed", { err: err instanceof Error ? err.message : String(err) });
@@ -152,6 +153,28 @@ export class AlertEngine {
     }
     void marketByCoin;
     return out;
+  }
+
+  /**
+   * Fill in forward outcomes for score snapshots whose horizon has elapsed.
+   *
+   * Measures realized PnL from the wallet's fills over the forward window —
+   * deposit-immune, unlike equity change. Bounded to a few wallets per tick so
+   * this never competes with alert evaluation for the rate-limit budget.
+   */
+  private async resolveDueScoreOutcomes(now: number): Promise<void> {
+    const due = this.store.scores.due(3, now);
+    for (const snap of due) {
+      try {
+        const windowEnd = snap.ts + snap.horizonDays * 86_400_000;
+        const fills = await this.hl.userFillsByTime(snap.address, snap.ts, windowEnd);
+        const forwardPnl = fills.reduce((sum, f) => sum + Number(f.closedPnl ?? 0), 0);
+        this.store.scores.setOutcome(snap.id, Number.isFinite(forwardPnl) ? forwardPnl : 0, now);
+      } catch (err) {
+        // Leave unresolved; it will be retried on a later tick.
+        log.warn("score outcome resolution failed", { address: snap.address, err: String(err) });
+      }
+    }
   }
 
   private async scoreDueSignals(marketByCoin: Map<string, { markPx: number }>, now: number): Promise<void> {

@@ -47,7 +47,8 @@ that attaches a builder code to orders.
 | `hl_signal_track_record` | premium | Transparent, **verifiable performance** of emitted signals: hit-rate and avg/median direction-adjusted forward return per signal type. |
 | `hl_signal_pubkey` | free | Ed25519 public key to independently **verify** any signal's authenticity + timestamp. |
 | `hl_admin_stats` | free (own gate) | **Operator only** — requires `adminSecret` matching `HYPERSIGNAL_ADMIN_SECRET`. Per-key usage this billing period, top tools, active alerts, signal track record, x402 payment counts. |
-| `hl_smart_money_score` | premium | Rank a cohort by a **smart-money score** (risk-adjusted perf + winrate + reward/risk + size + activity) with behavioral **labels** (whale, sharp, scalper, market_maker_like, high_conviction, …). |
+| `hl_smart_money_score` | premium | Rank a cohort by a **smart-money screening score** (risk-adjusted perf + winrate + reward/risk + size + activity) with behavioral **labels** (whale, sharp, scalper, market_maker_like, high_conviction, …). A descriptive screener over past results — see `hl_score_calibration` before treating it as a forecast. |
+| `hl_score_calibration` | free | **Out-of-sample evidence** for the smart-money score: Spearman rank correlation between score and the realized forward PnL each wallet went on to earn, p-value, and mean forward PnL per score quartile. Free on purpose — a claim about predictive power should be checkable before you pay for it. |
 | `hl_coordination_scan` | premium | Find wallets holding near-identical exposure (cosine similarity) — likely the **same entity / copy-bot / coordinated group**; returns clusters + strongest pairs. |
 | `hl_polymarket_divergence` | premium | Compare **Polymarket** price-threshold odds against the probability implied by Hyperliquid price + realized vol — a cross-market mispricing edge no other MCP offers. |
 

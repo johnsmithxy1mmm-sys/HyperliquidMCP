@@ -8,16 +8,22 @@ import { getDb } from "../billing/db.js";
 import { SqliteSnapshotStore } from "./sqliteSnapshots.js";
 import { AlertStore } from "./alertStore.js";
 import { SignalStore } from "./signalStore.js";
+import { CohortStore } from "./cohortStore.js";
+import { ScoreStore } from "./scoreStore.js";
 
 export class Warehouse {
   readonly snapshots: SqliteSnapshotStore;
   readonly alerts: AlertStore;
   readonly signals: SignalStore;
+  readonly cohort: CohortStore;
+  readonly scores: ScoreStore;
 
   constructor(config: Config) {
     const db = getDb(config.dbPath);
     this.snapshots = new SqliteSnapshotStore(db);
     this.alerts = new AlertStore(db);
     this.signals = new SignalStore(db);
+    this.cohort = new CohortStore(db);
+    this.scores = new ScoreStore(db);
   }
 }

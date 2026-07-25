@@ -14,6 +14,7 @@ import { getAccount } from "./free/getAccount.js";
 import { getOpenOrders } from "./free/getOpenOrders.js";
 import { signalPubkey } from "./free/signalPubkey.js";
 import { adminStats } from "./free/adminStats.js";
+import { scoreCalibration } from "./free/scoreCalibration.js";
 // Premium
 import { whalePositions } from "./premium/whalePositions.js";
 import { whaleFlowAlerts } from "./premium/whaleFlowAlerts.js";
@@ -43,6 +44,7 @@ export const FREE_TOOLS: ToolDef[] = [
   getOpenOrders,
   signalPubkey,
   adminStats,
+  scoreCalibration,
 ];
 
 export const PREMIUM_TOOLS: ToolDef[] = [
