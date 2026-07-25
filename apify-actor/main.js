@@ -45,6 +45,9 @@ try {
       "x-api-key": apiKey,
     },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: tool, arguments: args } }),
+    // A hung MCP server must fail the run promptly, not stall it until the
+    // Actor-level timeout bills dead time.
+    signal: AbortSignal.timeout(60_000),
   });
 
   const json = await res.json();

@@ -79,6 +79,16 @@ function envNum(name: string, def: number): number {
   return Number.isFinite(n) ? n : def;
 }
 
+/**
+ * envNum with sanity bounds. A typo'd HL_REQUEST_TIMEOUT_MS=0 would abort every
+ * request instantly and a negative HL_MAX_RETRIES would skip the request loop
+ * entirely — misconfiguration should degrade to a working default, not take the
+ * server down in a way that looks like a Hyperliquid outage.
+ */
+function envNumClamped(name: string, def: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, envNum(name, def)));
+}
+
 function envList(name: string): string[] {
   const v = process.env[name];
   if (!v) return [];
@@ -107,15 +117,15 @@ export function loadConfig(): Config {
     exchangeBaseUrl: `${base}/exchange`,
     wsUrl,
 
-    requestTimeoutMs: envNum("HL_REQUEST_TIMEOUT_MS", 10_000),
-    maxRetries: envNum("HL_MAX_RETRIES", 3),
-    rateWeightPerMin: envNum("HL_RATE_WEIGHT_PER_MIN", 1_100),
+    requestTimeoutMs: envNumClamped("HL_REQUEST_TIMEOUT_MS", 10_000, 500, 120_000),
+    maxRetries: envNumClamped("HL_MAX_RETRIES", 3, 0, 10),
+    rateWeightPerMin: envNumClamped("HL_RATE_WEIGHT_PER_MIN", 1_100, 10, 100_000),
 
     wsEnabled: envBool("HL_WS_ENABLED", true),
 
     dbPath: process.env.HYPERSIGNAL_DB_PATH ?? "./data/hypersignal.db",
 
-    httpPort: envNum("PORT", 8080),
+    httpPort: envNumClamped("PORT", 8080, 1, 65_535),
     httpPath: process.env.MCP_HTTP_PATH ?? "/mcp",
 
     builder: {

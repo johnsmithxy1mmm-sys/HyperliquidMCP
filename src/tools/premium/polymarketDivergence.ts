@@ -59,7 +59,8 @@ export const polymarketDivergence: ToolDef = {
     const endTime = Math.floor(Date.now() / 60_000) * 60_000;
     const startTime = endTime - volWindowDays * 86_400_000;
     const candles = await ctx.hl.candles(market.coin, interval, startTime, endTime);
-    const closes = candles.sort((a, b) => a.t - b.t).map((c) => num(c.c));
+    // Copy: `candles` is the cached array (shared by reference across requests).
+    const closes = [...candles].sort((a, b) => a.t - b.t).map((c) => num(c.c));
     const sigma = annualizedVol(closes, INTERVAL_PERIODS[interval] ?? 365);
     const drift = args.useFundingDrift === true ? market.fundingApr : 0;
     const S = market.markPx;

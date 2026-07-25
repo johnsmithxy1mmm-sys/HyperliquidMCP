@@ -117,17 +117,39 @@ export const pollAlerts: ToolDef = {
   requiresSubject: true,
   title: "Poll fired alerts",
   description:
-    "Retrieve alert events that fired since your last poll (at-least-once, then marked delivered). Each event " +
-    "includes a signed signal payload you can verify with hl_signal_pubkey. Call periodically to act on the market.",
-  inputSchema: { limit: z.number().int().min(1).max(200).default(50) },
-  outputSchema: { count: z.number(), events: z.array(z.record(z.any())) },
+    "Retrieve alert events that fired since your last poll. Default is simple at-most-once delivery (events are " +
+    "marked delivered as soon as they are read — a lost response loses them). For reliable at-least-once delivery, " +
+    "pass reliable=true: events are then redelivered on every poll until you acknowledge them by passing the highest " +
+    "event `id` you have processed as ackThroughId. Each event includes a signed signal payload verifiable with " +
+    "hl_signal_pubkey. Call periodically to act on the market.",
+  inputSchema: {
+    limit: z.number().int().min(1).max(200).default(50),
+    reliable: z
+      .boolean()
+      .default(false)
+      .describe("true = at-least-once: events redeliver until acknowledged via ackThroughId."),
+    ackThroughId: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe("Acknowledge all events with id <= this value (from a previous reliable poll)."),
+  },
+  outputSchema: { count: z.number(), acked: z.number(), events: z.array(z.record(z.any())) },
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   run: async (args, ctx) => {
     const subject = requireOwner(ctx);
-    const events = ctx.store.alerts.pollUnacked(subject, args.limit as number);
+    // Ack BEFORE reading, so the watermark from the caller's previous poll
+    // clears those events out of this response.
+    const acked =
+      args.ackThroughId !== undefined ? ctx.store.alerts.ackThrough(subject, args.ackThroughId as number) : 0;
+    const events = ctx.store.alerts.pollUnacked(subject, args.limit as number, args.reliable !== true);
     return {
-      summary: events.length ? `${events.length} alert event(s) fired.` : "No new alert events.",
-      data: { count: events.length, events },
+      summary: events.length
+        ? `${events.length} alert event(s) fired.` +
+          (args.reliable === true ? ` Acknowledge with ackThroughId=${events[events.length - 1].id}.` : "")
+        : "No new alert events.",
+      data: { count: events.length, acked, events },
     };
   },
 };

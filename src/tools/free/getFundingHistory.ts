@@ -34,7 +34,8 @@ export const getFundingHistory: ToolDef = {
     const startTime = (args.startTime as number | undefined) ?? endTime - 7 * 86_400_000;
 
     const raw = await ctx.hl.fundingHistory(market.coin, startTime, endTime);
-    const sorted = raw.sort((a, b) => a.time - b.time);
+    // Copy: `raw` is the cached array (shared by reference across requests).
+    const sorted = [...raw].sort((a, b) => a.time - b.time);
     const rates = sorted.map((e) => num(e.fundingRate));
     const avgHourly = rates.length ? rates.reduce((a, b) => a + b, 0) / rates.length : 0;
     const cumulative = rates.reduce((a, b) => a + b, 0);

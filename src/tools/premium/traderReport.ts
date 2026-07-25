@@ -47,7 +47,9 @@ export const traderReport: ToolDef = {
     const curvePoints = (args.curvePoints as number) ?? 50;
     const startTime = Date.now() - lookbackDays * 86_400_000;
 
-    const fills = (await ctx.hl.userFillsByTime(address, startTime)).sort((a, b) => a.time - b.time);
+    // Copy before sorting: hlClient returns the CACHED array by reference, and
+    // an in-place sort would mutate it under any concurrent reader.
+    const fills = [...(await ctx.hl.userFillsByTime(address, startTime))].sort((a, b) => a.time - b.time);
 
     const closed = fills.filter((f) => num(f.closedPnl) !== 0);
     const wins = closed.filter((f) => num(f.closedPnl) > 0);

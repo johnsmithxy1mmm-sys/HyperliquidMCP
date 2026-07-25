@@ -106,16 +106,25 @@ export class AlertStore {
     this.db
       .prepare(`INSERT INTO fired_events (alert_id, subject, at, message, payload, acked) VALUES (?, ?, ?, ?, ?, 0)`)
       .run(alertId, subject, at, message, JSON.stringify(payload));
-    // Keep the table bounded: delivered events older than 30 days are history.
-    this.db.prepare(`DELETE FROM fired_events WHERE acked = 1 AND at < ?`).run(Date.now() - 30 * 86_400_000);
+    // Keep the table bounded. Unacked events age out too: a subject that
+    // registers alerts and never polls would otherwise grow this table forever,
+    // and a 30-day-old alert event has no actionable value anyway.
+    this.db.prepare(`DELETE FROM fired_events WHERE at < ?`).run(Date.now() - 30 * 86_400_000);
   }
 
-  /** Return unacked events for a subject and mark them acked (at-least-once delivery). */
-  pollUnacked(subject: string, limit = 50): FiredEvent[] {
+  /**
+   * Return unacked events for a subject.
+   *
+   * When `autoAck` is true the returned events are immediately marked acked —
+   * simple, but at-MOST-once: a response lost in transit loses the events.
+   * When false, events stay queued and are redelivered until the caller
+   * acknowledges them via `ackThrough` (at-least-once).
+   */
+  pollUnacked(subject: string, limit = 50, autoAck = true): FiredEvent[] {
     const rows = this.db
       .prepare(`SELECT * FROM fired_events WHERE subject = ? AND acked = 0 ORDER BY at ASC LIMIT ?`)
       .all(subject, limit) as Array<{ id: number; alert_id: string; subject: string; at: number; message: string; payload: string }>;
-    if (rows.length > 0) {
+    if (autoAck && rows.length > 0) {
       const ids = rows.map((r) => r.id);
       this.db.prepare(`UPDATE fired_events SET acked = 1 WHERE id IN (${ids.map(() => "?").join(",")})`).run(...ids);
     }
@@ -127,5 +136,12 @@ export class AlertStore {
       message: r.message,
       payload: JSON.parse(r.payload) as Record<string, unknown>,
     }));
+  }
+
+  /** Ack every event with id <= watermark for the subject. Returns rows acked. */
+  ackThrough(subject: string, eventId: number): number {
+    return this.db
+      .prepare(`UPDATE fired_events SET acked = 1 WHERE subject = ? AND acked = 0 AND id <= ?`)
+      .run(subject, eventId).changes;
   }
 }

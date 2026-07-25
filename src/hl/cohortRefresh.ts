@@ -66,7 +66,13 @@ export class CohortRefresher {
         return 0;
       }
 
-      const strategy = (process.env.HL_COHORT_STRATEGY as CohortStrategy) || "accountValue";
+      // Validate the strategy: an unknown value would silently rank by the
+      // switch default while being stored (and reported) as if it applied.
+      const rawStrategy = (process.env.HL_COHORT_STRATEGY ?? "").trim();
+      const VALID: CohortStrategy[] = ["accountValue", "pnlMonth", "pnlAllTime"];
+      let strategy: CohortStrategy = "accountValue";
+      if ((VALID as string[]).includes(rawStrategy)) strategy = rawStrategy as CohortStrategy;
+      else if (rawStrategy) log.warn("invalid HL_COHORT_STRATEGY; using accountValue", { rawStrategy });
       const ranked = rankCohort(rows, {
         strategy,
         topN: envNum("HL_COHORT_SIZE", 60),

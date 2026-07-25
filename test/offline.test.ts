@@ -603,6 +603,37 @@ test("score sampler reports a missing cohort instead of throwing", async () => {
   assert.equal(res.sampled, 0);
 });
 
+test("reliable alert polling redelivers until acked; autoAck stays at-most-once", async () => {
+  const { AlertStore } = await import("../src/store/alertStore.js");
+  const db = new BetterSqlite3(":memory:");
+  const store = new AlertStore(db);
+  const a = store.create("subj", "price_move", { coin: "BTC" }, 60);
+  store.recordFired(a.id, "subj", Date.now(), "m1", {});
+  store.recordFired(a.id, "subj", Date.now(), "m2", {});
+
+  // Reliable mode: same events come back until acknowledged — a response lost
+  // in transit is retried, not lost.
+  const first = store.pollUnacked("subj", 50, false);
+  assert.equal(first.length, 2);
+  const again = store.pollUnacked("subj", 50, false);
+  assert.deepEqual(again.map((e) => e.id), first.map((e) => e.id));
+
+  // Watermark ack clears everything at or below the id.
+  const acked = store.ackThrough("subj", first[first.length - 1].id);
+  assert.equal(acked, 2);
+  assert.equal(store.pollUnacked("subj", 50, false).length, 0);
+
+  // autoAck (default): read once, gone — documented at-most-once.
+  store.recordFired(a.id, "subj", Date.now(), "m3", {});
+  assert.equal(store.pollUnacked("subj", 50, true).length, 1);
+  assert.equal(store.pollUnacked("subj", 50, true).length, 0);
+
+  // Ownership isolation: another subject's watermark acks nothing.
+  store.recordFired(a.id, "subj", Date.now(), "m4", {});
+  assert.equal(store.ackThrough("other", 999_999), 0);
+  assert.equal(store.pollUnacked("subj", 50, false).length, 1);
+});
+
 test("score store dedupes one observation per address per day", () => {
   const db = new BetterSqlite3(":memory:");
   const store = new ScoreStore(db);

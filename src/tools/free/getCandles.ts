@@ -67,7 +67,8 @@ export const getCandles: ToolDef = {
     }
 
     const raw = await ctx.hl.candles(market.coin, interval, startTime, endTime);
-    const candles = raw
+    // Copy: `raw` is the cached array (shared by reference across requests).
+    const candles = [...raw]
       .sort((a, b) => a.t - b.t)
       .map((c) => ({
         t: c.t,
