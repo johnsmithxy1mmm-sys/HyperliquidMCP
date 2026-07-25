@@ -1,5 +1,10 @@
 # HyperSignal MCP
 
+[![CI](https://github.com/johnsmithxy1mmm-sys/HyperliquidMCP/actions/workflows/ci.yml/badge.svg)](https://github.com/johnsmithxy1mmm-sys/HyperliquidMCP/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
+[![Node](https://img.shields.io/badge/node-20%20%7C%2022-brightgreen)](https://nodejs.org)
+[![HyperliquidMCP MCP server](https://glama.ai/mcp/servers/johnsmithxy1mmm-sys/HyperliquidMCP/badges/card.svg)](https://glama.ai/mcp/servers/johnsmithxy1mmm-sys/HyperliquidMCP)
+
 **Monetized [MCP](https://modelcontextprotocol.io) server for Hyperliquid analytics & signals.**
 Gives AI agents (Claude, Cursor, ChatGPT, autonomous trading agents) the Hyperliquid analytics
 that free open-source MCP servers don't have — whale-cohort signals, liquidation maps, funding
