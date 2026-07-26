@@ -5,7 +5,7 @@ import { num, round } from "../../core/format.js";
 import { ANALYTICS_DISCLAIMER } from "../../hl/whales.js";
 import { PolymarketClient } from "../../polymarket/client.js";
 import { annualizedVol, impliedProbForMode } from "../../polymarket/pricing.js";
-import { parseThresholdMarket, yearsToExpiry } from "../../polymarket/parse.js";
+import { parseThresholdMarket, yearsToExpiry, isPlausibleThreshold } from "../../polymarket/parse.js";
 
 const INTERVAL_PERIODS: Record<string, number> = {
   "1h": 24 * 365,
@@ -43,6 +43,7 @@ export const polymarketDivergence: ToolDef = {
     annualizedVol: z.number(),
     driftUsed: z.number(),
     marketsScanned: z.number(),
+    skippedImplausible: z.number(),
     divergences: z.array(z.record(z.any())),
     note: z.string(),
     disclaimer: z.string(),
@@ -69,12 +70,21 @@ export const polymarketDivergence: ToolDef = {
     const pmMarkets = await client.activeMarkets();
 
     const now = Date.now();
+    let skipped = 0;
     const divergences = pmMarkets
       .map((pm) => {
         const parsed = parseThresholdMarket(pm.question);
         if (!parsed || parsed.coin !== market.coin || pm.yesProb === null) return null;
+        // Last line of defence against a misparse: a threshold orders of
+        // magnitude from spot is not a price. These produce P of exactly 0 or 1
+        // and would otherwise top the ranking, since it sorts by |edge|.
+        if (!isPlausibleThreshold(parsed.thresholdUsd, S)) {
+          skipped++;
+          return null;
+        }
         const tYears = yearsToExpiry(pm.endDate, now);
-        if (tYears <= 0) return null;
+        // NaN fails every comparison, so test for a positive number explicitly.
+        if (!(tYears > 0)) return null;
         const hlProb = impliedProbForMode(parsed.mode, S, parsed.thresholdUsd, tYears, sigma, drift);
         const edge = pm.yesProb - hlProb;
         return {
@@ -100,13 +110,18 @@ export const polymarketDivergence: ToolDef = {
     const note =
       pmMarkets.length === 0
         ? "No Polymarket markets returned (endpoint unreachable or empty). Divergence needs live Polymarket data."
-        : "Lognormal estimate from HL price + realized vol; 'touch' uses a one-touch barrier. Not a guarantee.";
+        : "Lognormal estimate from HL price + realized vol; 'touch' uses a one-touch barrier. Not a guarantee. " +
+          "Question text is parsed heuristically; markets whose threshold is implausible versus spot, that name " +
+          "more than one asset, or that are not USD price thresholds (dominance, market cap, supply) are skipped " +
+          "rather than priced.";
 
     const top = divergences[0];
     return {
       summary:
         `${market.coin}: scanned ${pmMarkets.length} Polymarket markets, ` +
-        `${divergences.length} divergence(s) ≥ ${round(minEdge * 100, 0)}pp (vol ${round(sigma * 100, 1)}%).` +
+        `${divergences.length} divergence(s) ≥ ${round(minEdge * 100, 0)}pp (vol ${round(sigma * 100, 1)}%)` +
+        (skipped > 0 ? `, ${skipped} skipped as implausible` : "") +
+        "." +
         (top ? ` Top: "${top.question.slice(0, 60)}" edge ${round(top.edge * 100, 1)}pp.` : ""),
       data: {
         coin: market.coin,
@@ -114,6 +129,7 @@ export const polymarketDivergence: ToolDef = {
         annualizedVol: round(sigma, 4),
         driftUsed: round(drift, 4),
         marketsScanned: pmMarkets.length,
+        skippedImplausible: skipped,
         divergences,
         note,
         disclaimer: ANALYTICS_DISCLAIMER,

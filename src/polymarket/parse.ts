@@ -33,13 +33,39 @@ const TOUCH_BELOW_WORDS = /\b(drop to|fall to|dip to|crash to|decline to)\b/i;
 const ABOVE_WORDS = /\b(above|over|exceed|greater than|more than|≥|>=|at or above)\b/i;
 const BELOW_WORDS = /\b(below|under|less than|≤|<=)\b/i;
 
+/**
+ * Phrases that mean the number in the question is NOT a USD price of the
+ * asset. "Bitcoin dominance above 60%" parses as a $60 BTC threshold and, with
+ * BTC near $90,000, yields P=1.0 and a ~50pp "edge" that outranks every real
+ * opportunity. Sorting by |edge| means the worst misreads surface first, so
+ * these must be refused outright rather than scored.
+ */
+const NON_PRICE_SUBJECTS =
+  /\b(dominance|market\s?cap|marketcap|supply|hashrate|hash\s?rate|difficulty|fees?|gas|volume|tvl|apy|apr|inflation|holders?|addresses|transactions|nodes?|staked?|percent|%)\b/i;
+
+/** Two thresholds in one question: a range or a compound bet, not a single event. */
+const COMPOUND = /\b(and|or)\b/i;
+
 export function parseThresholdMarket(question: string): ParsedThreshold | null {
   if (!question) return null;
   const asset = ASSET_MAP.find((a) => a.re.test(question));
   if (!asset) return null;
 
+  // A question about dominance/market cap/supply is not a price threshold, and
+  // pricing it as one produces a confident, completely fictitious edge.
+  if (NON_PRICE_SUBJECTS.test(question)) return null;
+
+  // More than one asset mentioned => we cannot tell which the threshold belongs
+  // to. Picking one silently discards the other half of the question.
+  const assetsMentioned = ASSET_MAP.filter((a) => a.re.test(question)).length;
+  if (assetsMentioned > 1) return null;
+
   const thresholdUsd = parseThresholdUsd(question);
   if (thresholdUsd === null) return null;
+
+  // "above $90k and below $100k" is a range; a single-threshold model prices it
+  // wrongly in a way no disclaimer covers.
+  if (COMPOUND.test(question) && countThresholdCandidates(question) > 1) return null;
 
   let mode: ThresholdMode;
   if (TOUCH_BELOW_WORDS.test(question)) mode = "touch_below";
@@ -77,6 +103,29 @@ export function parseThresholdUsd(text: string): number | null {
     }
   }
   return best?.value ?? null;
+}
+
+/** How many distinct price-like numbers the question contains. */
+function countThresholdCandidates(text: string): number {
+  const re = /(\$)\s*([\d]{1,3}(?:,[\d]{3})+|[\d]+(?:\.[\d]+)?)\s*(k|thousand|m|mm|million|bn|billion)?\b/gi;
+  const seen = new Set<string>();
+  for (const m of text.matchAll(re)) seen.add(`${m[2]}${(m[3] ?? "").toLowerCase()}`);
+  return seen.size;
+}
+
+/**
+ * Is a parsed threshold plausibly a price for an asset trading at `spot`?
+ *
+ * A threshold orders of magnitude away from spot is almost always a misparse
+ * (a percentage, a count, a year), and it is precisely the misparses that
+ * produce probabilities of exactly 0 or 1 — the largest possible |edge| — and
+ * therefore rank first. Real threshold markets sit within a few multiples of
+ * spot; this rejects the rest.
+ */
+export function isPlausibleThreshold(thresholdUsd: number, spot: number, maxRatio = 20): boolean {
+  if (!(thresholdUsd > 0) || !(spot > 0)) return false;
+  const ratio = thresholdUsd > spot ? thresholdUsd / spot : spot / thresholdUsd;
+  return ratio <= maxRatio;
 }
 
 /** Years to expiry from an ISO/epoch end date; clamped ≥ 0. */

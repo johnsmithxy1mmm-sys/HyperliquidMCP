@@ -4,7 +4,7 @@ import { ToolError } from "../../core/errors.js";
 import { resolveMarket } from "../../hl/markets.js";
 import { normalizeAccount } from "../../hl/account.js";
 import { addressForKey } from "../../trading/signing.js";
-import { assertAddress } from "../../core/format.js";
+import { assertAddress, round } from "../../core/format.js";
 import { planTwap, planMirror, type MirrorPositionInput } from "../../execution/plan.js";
 
 const EXEC_DISCLAIMER =
@@ -25,7 +25,9 @@ export const twapOrder: ToolDef = {
   description:
     "Accumulate/reduce a position by slicing it into evenly-spaced child orders over a duration (TWAP), minimizing " +
     "market impact, with the builder code on every child. Dry-run returns the schedule; live schedules it and returns " +
-    "a plan id (poll with hl_execution_status). " +
+    "a plan id (poll with hl_execution_status). A live plan keeps the server process alive until every slice has " +
+    "fired; plan state is in-memory, so if the process is killed mid-run the already-submitted slices remain open on " +
+    "the exchange and the remainder is abandoned (logged on shutdown). " +
     EXEC_DISCLAIMER,
   inputSchema: {
     coin: z.string(),
@@ -83,14 +85,29 @@ export const copyWallet: ToolDef = {
   tier: "trading",
   title: "Copy-trade a wallet",
   description:
-    "Mirror a target wallet's perp positioning, scaled to your equity, as market orders with the builder code " +
-    "attached. Dry-run returns the mirror plan (per-coin side/size); live submits it. Your agent equity is inferred " +
-    "from the agent wallet unless myEquityUsd is given. " +
+    "Bring your perp positioning into line with a target wallet's, scaled to your equity, using the builder code. " +
+    "Orders are DELTAS against what you already hold, so calling this repeatedly keeps you in sync instead of " +
+    "compounding the position — once matched, a repeat call submits nothing. Coins the target has exited are " +
+    "unwound. A pre-trade cap (maxLeverage, default 3x equity) bounds the notional before anything is signed. " +
+    "Dry-run returns the plan; live submits it. " +
     EXEC_DISCLAIMER,
   inputSchema: {
     targetAddress: z.string().describe("Wallet to copy (0x)."),
     scale: z.number().min(0).max(10).default(1).describe("Exposure multiple relative to equity-proportional mirror."),
-    myEquityUsd: z.number().min(0).optional().describe("Override your equity; else inferred from the agent wallet."),
+    myEquityUsd: z
+      .number()
+      .min(0)
+      .optional()
+      .describe(
+        "Override your equity; else inferred from the agent wallet. When submitting, this may not exceed the " +
+          "agent wallet's real equity.",
+      ),
+    maxLeverage: z
+      .number()
+      .min(0.1)
+      .max(20)
+      .default(3)
+      .describe("Pre-trade risk cap: total notional traded may not exceed equity x this."),
     confirm: z.boolean().default(false),
     dryRun: z.boolean().default(true),
   },
@@ -98,6 +115,8 @@ export const copyWallet: ToolDef = {
     mode: z.string(),
     targetEquityUsd: z.number(),
     myEquityUsd: z.number(),
+    alreadyInSync: z.boolean(),
+    deltaNotionalUsd: z.number(),
     orders: z.array(z.record(z.any())),
     results: z.array(z.record(z.any())).optional(),
   },
@@ -108,26 +127,101 @@ export const copyWallet: ToolDef = {
     const target = await ctx.hl.clearinghouseState(targetAddress);
     const targetAcct = normalizeAccount(target);
 
+    const live = args.confirm === true && args.dryRun !== true;
+
+    // My own account: needed BOTH for equity and for the positions I already
+    // hold. Without the latter every call re-mirrors the full position.
+    let myAccount = null as ReturnType<typeof normalizeAccount> | null;
+    if (ctx.config.agentPrivateKey) {
+      myAccount = normalizeAccount(await ctx.hl.clearinghouseState(addressForKey(ctx.config.agentPrivateKey)));
+    }
+
+    // Submitting without knowing what we already hold would silently fall back
+    // to mirroring the full position — the exact compounding this tool must not
+    // do. Refuse instead of guessing.
+    if (live && !myAccount) {
+      throw new ToolError(
+        "positions_unknown",
+        "Cannot submit a copy without reading your current positions (needs HL_AGENT_PRIVATE_KEY). " +
+          "Without them the mirror cannot be expressed as a delta and repeated calls would compound exposure.",
+      );
+    }
+
     let myEquity = args.myEquityUsd as number | undefined;
     if (myEquity === undefined) {
-      if (!ctx.config.agentPrivateKey) {
+      if (!myAccount) {
         throw new ToolError("no_equity", "Provide myEquityUsd, or set HL_AGENT_PRIVATE_KEY to infer your equity.");
       }
-      const mine = normalizeAccount(await ctx.hl.clearinghouseState(addressForKey(ctx.config.agentPrivateKey)));
-      myEquity = mine.accountValue;
+      myEquity = myAccount.accountValue;
+    } else if (live && myAccount && myEquity > myAccount.accountValue) {
+      // Sizing from a claimed equity larger than the real one turns a typo into
+      // a massively over-leveraged order that the exchange will happily accept.
+      throw new ToolError(
+        "equity_overstated",
+        `myEquityUsd ($${myEquity.toLocaleString()}) exceeds the agent wallet's real equity ` +
+          `($${myAccount.accountValue.toLocaleString()}). Refusing to size orders from an equity you do not have.`,
+        { claimed: myEquity, actual: myAccount.accountValue },
+      );
     }
 
     const positions: MirrorPositionInput[] = targetAcct.positions
       .filter((p) => p.szi !== 0)
       .map((p) => ({ coin: p.coin, szi: p.szi, markPx: p.szi !== 0 ? Math.abs(p.positionValueUsd / p.szi) : 0 }));
-    const orders = planMirror(positions, myEquity, targetAcct.accountValue, args.scale as number);
+    // What I already hold — makes the mirror a delta, so repeating the call is
+    // a no-op instead of doubling the position.
+    const mine: MirrorPositionInput[] = (myAccount?.positions ?? [])
+      .filter((p) => p.szi !== 0)
+      .map((p) => ({ coin: p.coin, szi: p.szi, markPx: p.szi !== 0 ? Math.abs(p.positionValueUsd / p.szi) : 0 }));
 
-    const live = args.confirm === true && args.dryRun !== true;
+    const orders = planMirror(positions, myEquity, targetAcct.accountValue, args.scale as number, mine);
+    const deltaNotional = orders.reduce((a, o) => a + o.deltaNotionalUsd, 0);
+    const alreadyInSync = orders.length === 0;
+
     if (!live) {
       return {
-        summary: `Dry-run copy: mirror ${orders.length} position(s) of ${String(args.targetAddress).slice(0, 8)}… scaled to $${myEquity}. Set confirm=true & dryRun=false to submit.`,
-        data: { mode: "dry_run", targetEquityUsd: targetAcct.accountValue, myEquityUsd: myEquity, orders },
+        summary: alreadyInSync
+          ? `Dry-run copy: already in sync with ${targetAddress.slice(0, 10)}… — no orders needed.`
+          : `Dry-run copy: ${orders.length} delta order(s), $${Math.round(deltaNotional).toLocaleString()} traded, ` +
+            `to match ${targetAddress.slice(0, 10)}… scaled to $${Math.round(myEquity).toLocaleString()}. ` +
+            `Set confirm=true & dryRun=false to submit.`,
+        data: {
+          mode: "dry_run",
+          targetEquityUsd: targetAcct.accountValue,
+          myEquityUsd: myEquity,
+          alreadyInSync,
+          deltaNotionalUsd: round(deltaNotional, 2),
+          orders,
+        },
       };
+    }
+
+    if (alreadyInSync) {
+      return {
+        summary: `Already in sync with ${targetAddress.slice(0, 10)}… — nothing submitted.`,
+        data: {
+          mode: "noop",
+          targetEquityUsd: targetAcct.accountValue,
+          myEquityUsd: myEquity,
+          alreadyInSync: true,
+          deltaNotionalUsd: 0,
+          orders: [],
+          results: [],
+        },
+      };
+    }
+
+    // Pre-trade risk check: bound the notional BEFORE anything is signed.
+    // Checking after submission would be reporting, not a limit.
+    const maxLeverage = (args.maxLeverage as number) ?? 3;
+    const cap = myEquity * maxLeverage;
+    if (deltaNotional > cap) {
+      throw new ToolError(
+        "risk_limit_exceeded",
+        `This mirror would trade $${Math.round(deltaNotional).toLocaleString()} of notional, above the ` +
+          `$${Math.round(cap).toLocaleString()} cap (equity $${Math.round(myEquity).toLocaleString()} x maxLeverage ${maxLeverage}). ` +
+          `Lower scale, or raise maxLeverage deliberately.`,
+        { deltaNotionalUsd: round(deltaNotional, 2), capUsd: round(cap, 2), maxLeverage },
+      );
     }
 
     const results: Array<Record<string, unknown>> = [];
@@ -136,7 +230,7 @@ export const copyWallet: ToolDef = {
       // the exchange, so every leg's outcome has to be reported.
       try {
         const res = await trading.placeOrder(
-          { coin: o.coin, isBuy: o.isBuy, sz: o.size, reduceOnly: false, tif: "Ioc" },
+          { coin: o.coin, isBuy: o.isBuy, sz: o.size, reduceOnly: o.reduceOnly, tif: "Ioc" },
           { confirm: true, dryRun: false },
         );
         results.push({ coin: o.coin, side: o.isBuy ? "buy" : "sell", size: o.size, mode: res.mode, reason: res.reason });
@@ -151,8 +245,17 @@ export const copyWallet: ToolDef = {
       }
     }
     return {
-      summary: `Copy submitted: ${results.filter((r) => r.mode === "submitted").length}/${orders.length} mirror orders.`,
-      data: { mode: "submitted", targetEquityUsd: targetAcct.accountValue, myEquityUsd: myEquity, orders, results },
+      summary: `Copy submitted: ${results.filter((r) => r.mode === "submitted").length}/${orders.length} delta orders ` +
+        `($${Math.round(deltaNotional).toLocaleString()} notional).`,
+      data: {
+        mode: "submitted",
+        targetEquityUsd: targetAcct.accountValue,
+        myEquityUsd: myEquity,
+        alreadyInSync: false,
+        deltaNotionalUsd: round(deltaNotional, 2),
+        orders,
+        results,
+      },
     };
   },
 };

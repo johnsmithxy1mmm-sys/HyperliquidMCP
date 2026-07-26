@@ -29,12 +29,13 @@ import { scoreTrader, labelTrader } from "../src/smartmoney/score.js";
 import type { TraderProfile } from "../src/smartmoney/profile.js";
 import { cosineSimilarity, detectCoordination, type WalletVector } from "../src/smartmoney/coordination.js";
 import { normCdf, annualizedVol, probAboveAtExpiry, probTouchAbove, probTouchBelow, impliedProbForMode } from "../src/polymarket/pricing.js";
-import { parseThresholdMarket, parseThresholdUsd, yearsToExpiry } from "../src/polymarket/parse.js";
+import { parseThresholdMarket, parseThresholdUsd, yearsToExpiry, isPlausibleThreshold } from "../src/polymarket/parse.js";
 import BetterSqlite3 from "better-sqlite3";
 import { collectAdminStats, currentPeriod } from "../src/admin/stats.js";
 import { rankCohort, pnlForWindow } from "../src/hl/cohortRank.js";
 import { calibrate, spearman, rankWithTies, spearmanPValue } from "../src/smartmoney/calibration.js";
 import { ScoreStore, MAX_RESOLVE_ATTEMPTS, SCORE_HORIZON_DAYS } from "../src/store/scoreStore.js";
+import { scoreTolerangeMs } from "../src/store/signalStore.js";
 import { ScoreSampler } from "../src/smartmoney/scoreSampler.js";
 import type { ToolContext } from "../src/tools/registry.js";
 import { aggregateByCoin, type CohortAccount } from "../src/hl/whales.js";
@@ -192,6 +193,47 @@ test("planMirror scales exposure to equity and preserves direction", () => {
   assert.ok(eth && !eth.isBuy); // short preserved
 });
 
+test("planMirror emits deltas so repeating a copy does not compound exposure", () => {
+  const target = [{ coin: "BTC", szi: 10, markPx: 100_000 }];
+  const desired = 0.1; // $10k mirroring a $1M whale at scale 1
+
+  // From flat: open the full mirror.
+  const first = planMirror(target, 10_000, 1_000_000, 1, []);
+  assert.equal(first.length, 1);
+  assert.equal(round(first[0].size, 8), desired);
+  assert.equal(first[0].isBuy, true);
+  assert.equal(first[0].reduceOnly, false);
+
+  // Already in sync: a repeat call must emit NOTHING. Before the fix this
+  // returned the full mirror again and doubled the position.
+  const held = [{ coin: "BTC", szi: desired, markPx: 100_000 }];
+  assert.deepEqual(planMirror(target, 10_000, 1_000_000, 1, held), []);
+
+  // Partially filled: trade only the remainder.
+  const partial = planMirror(target, 10_000, 1_000_000, 1, [{ coin: "BTC", szi: 0.04, markPx: 100_000 }]);
+  assert.equal(round(partial[0].size, 8), round(desired - 0.04, 8));
+  assert.equal(partial[0].isBuy, true);
+
+  // Overweight: shrink, and mark reduceOnly so it can never grow the position.
+  const over = planMirror(target, 10_000, 1_000_000, 1, [{ coin: "BTC", szi: 0.3, markPx: 100_000 }]);
+  assert.equal(over[0].isBuy, false);
+  assert.equal(round(over[0].size, 8), 0.2);
+  assert.equal(over[0].reduceOnly, true);
+
+  // Target exited: unwind our leg instead of stranding it.
+  const exited = planMirror([], 10_000, 1_000_000, 1, held);
+  assert.equal(exited.length, 1);
+  assert.equal(exited[0].isBuy, false);
+  assert.equal(round(exited[0].size, 8), desired);
+  assert.equal(exited[0].reduceOnly, true);
+
+  // Flip long -> short must NOT be reduceOnly, or the exchange rejects it.
+  const flip = planMirror([{ coin: "BTC", szi: -10, markPx: 100_000 }], 10_000, 1_000_000, 1, held);
+  assert.equal(flip[0].isBuy, false);
+  assert.equal(round(flip[0].size, 8), 0.2); // 0.1 long -> 0.1 short
+  assert.equal(flip[0].reduceOnly, false);
+});
+
 test("evaluateAlert funding_apr fires on rising edge only, with carry direction", () => {
   const base: AlertRecord = {
     id: "a", subject: "s", type: "funding_apr", params: { coin: "BTC", aprThreshold: 0.5 },
@@ -323,6 +365,38 @@ test("parseThresholdMarket extracts asset, threshold, and mode", () => {
   assert.equal(c?.coin, "SOL");
   assert.equal(c?.mode, "below");
   assert.equal(parseThresholdMarket("Who wins the 2028 election?"), null);
+});
+
+test("parseThresholdMarket refuses questions that are not single USD price thresholds", () => {
+  // These are the misparses that hurt most: they yield a probability of exactly
+  // 0 or 1, therefore the largest possible |edge|, and the tool ranks by |edge|
+  // — so a misread outranks every genuine opportunity and lands in the summary.
+  assert.equal(parseThresholdMarket("Will Bitcoin dominance rise above 60%?"), null);
+  assert.equal(parseThresholdMarket("Will BTC market cap exceed 2 trillion?"), null);
+  assert.equal(parseThresholdMarket("Will Bitcoin hashrate exceed 800 EH/s?"), null);
+  assert.equal(parseThresholdMarket("Will ETH staked supply pass 40 million?"), null);
+  // Two assets: we cannot tell which the threshold belongs to.
+  assert.equal(parseThresholdMarket("Will SOL reach $500 or ETH reach $10000?"), null);
+  // A range is not a single-threshold event.
+  assert.equal(parseThresholdMarket("Will BTC be above $90k and below $100k?"), null);
+
+  // Genuine thresholds must still parse — the guard must not be a blanket ban.
+  assert.equal(parseThresholdMarket("Will BTC be above $150,000 on Dec 31 2026?")?.thresholdUsd, 150000);
+  assert.equal(parseThresholdMarket("Will ETH reach $10k by June?")?.mode, "touch");
+});
+
+test("isPlausibleThreshold rejects thresholds orders of magnitude from spot", () => {
+  // $60 against $90,000 spot is the dominance misparse; P collapses to 1.0.
+  assert.equal(isPlausibleThreshold(60, 90_000), false);
+  assert.equal(isPlausibleThreshold(2_000_000, 90_000), false);
+  // Real threshold markets sit within a few multiples of spot, either side.
+  assert.equal(isPlausibleThreshold(150_000, 90_000), true);
+  assert.equal(isPlausibleThreshold(45_000, 90_000), true);
+  assert.equal(isPlausibleThreshold(1_500_000, 90_000, 20), true); // exactly at the bound
+  // Degenerate inputs are not plausible.
+  assert.equal(isPlausibleThreshold(0, 90_000), false);
+  assert.equal(isPlausibleThreshold(100, 0), false);
+  assert.equal(isPlausibleThreshold(NaN, 90_000), false);
 });
 
 test("parseThresholdUsd honors suffixes", () => {
@@ -671,6 +745,135 @@ test("self-serve free key: one active key per fingerprint, re-issue is not a quo
   recordFreeKeyGrant(db, "fingerprint-b", "hash3");
   assert.equal(monthlyTotal(db, "hash3", "2026-07"), 0);
   assert.equal(getKey(db, "hash2")?.disabled, 0, "another requester must not revoke this one");
+});
+
+test("track record excludes late-scored signals and classifies legacy rows", async () => {
+  const { SignalStore } = await import("../src/store/signalStore.js");
+  const DAY = 86_400_000;
+  const t0 = 1_780_272_000_000;
+
+  // A row scored on time and a row scored 30 days late, both written under the
+  // old schema. Lateness is recoverable from scored_at, so the migration can
+  // classify history precisely instead of discarding it.
+  const db = new BetterSqlite3(":memory:");
+  db.exec(`CREATE TABLE signals (
+    id TEXT PRIMARY KEY, type TEXT NOT NULL, coin TEXT NOT NULL, direction TEXT NOT NULL,
+    ref_px REAL NOT NULL, ts INTEGER NOT NULL, horizon_minutes INTEGER NOT NULL, signature TEXT,
+    scored_at INTEGER, scored_px REAL, forward_return REAL);`);
+  const ins = db.prepare(
+    `INSERT INTO signals (id,type,coin,direction,ref_px,ts,horizon_minutes,signature,scored_at,scored_px,forward_return)
+     VALUES (?,?,?,?,?,?,?,NULL,?,?,?)`,
+  );
+  ins.run("ontime", "whale_net_flip", "BTC", "long", 100_000, t0, 1440, t0 + DAY + 30_000, 102_000, 0.02);
+  ins.run("late", "whale_net_flip", "BTC", "long", 100_000, t0, 1440, t0 + 30 * DAY, 160_000, 0.6);
+
+  const store = new SignalStore(db);
+  const rec = store.trackRecord()[0];
+
+  // The +60% thirty-day drift must not be published as a 24h forward return.
+  assert.equal(rec.scored, 1);
+  assert.equal(rec.avgReturnPct, 2);
+  assert.equal(rec.excludedStale, 1);
+  assert.equal(rec.total, 2);
+  // History is preserved on disk, only demoted in the statistics.
+  assert.equal((db.prepare(`SELECT COUNT(*) c FROM signals`).get() as { c: number }).c, 2);
+
+  // markStale closes a row out without letting it into the numbers.
+  const id = store.record({
+    type: "price_move", coin: "ETH", direction: "long", refPx: 1000, horizonMinutes: 60, ts: t0,
+  });
+  store.markStale(id, t0 + 10 * DAY);
+  const eth = store.trackRecord().find((r) => r.type === "price_move");
+  assert.equal(eth?.scored, 0);
+  assert.equal(eth?.excludedStale, 1);
+  // ...and it is no longer retried forever.
+  assert.equal(store.dueForScoring(t0 + 20 * DAY).some((s) => s.id === id), false);
+});
+
+test("INV-S8: hlClient cache must not hand out arrays callers can sort in place", async () => {
+  // The cache returns values BY REFERENCE. Four tools used to sort them in
+  // place, reordering shared state under any concurrent reader of the same
+  // entry. This locks in that a cached array survives a caller mutating its
+  // own copy — the discipline the fix relies on.
+  const cache = new TtlLruCache();
+  const original = [{ t: 3 }, { t: 1 }, { t: 2 }];
+  const first = await cache.getOrLoad("candles:BTC", 60_000, async () => original);
+  const copy = [...first].sort((a, b) => a.t - b.t);
+  assert.deepEqual(copy.map((c) => c.t), [1, 2, 3]);
+  const second = await cache.getOrLoad<typeof original>("candles:BTC", 60_000, async () => {
+    throw new Error("must be served from cache");
+  });
+  assert.deepEqual(second.map((c) => c.t), [3, 1, 2], "cached order must be untouched by the caller's sort");
+});
+
+test("INV-M1/R4: an x402 payment id can be consumed once, and released only on known failure", async () => {
+  const { consumePaymentId, releasePaymentId } = await import("../src/billing/db.js");
+  const db = new BetterSqlite3(":memory:");
+  db.exec(`CREATE TABLE x402_payments (payment_id TEXT PRIMARY KEY, created_at INTEGER NOT NULL);`);
+
+  assert.equal(consumePaymentId(db, "tx-1"), true, "first use reserves");
+  assert.equal(consumePaymentId(db, "tx-1"), false, "replay is refused");
+  // Settlement known-failed => the reservation is released and the caller may retry.
+  releasePaymentId(db, "tx-1");
+  assert.equal(consumePaymentId(db, "tx-1"), true, "released id is reusable");
+  // A different payment is unaffected.
+  assert.equal(consumePaymentId(db, "tx-2"), true);
+});
+
+test("INV-M5: monthly usage is monotonic and isolated per key and period", async () => {
+  const { incrementUsage, monthlyTotal } = await import("../src/billing/db.js");
+  const db = new BetterSqlite3(":memory:");
+  db.exec(`CREATE TABLE usage_counters (key_hash TEXT NOT NULL, period TEXT NOT NULL, tool TEXT NOT NULL,
+    count INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (key_hash, period, tool));`);
+
+  let prev = 0;
+  for (let i = 0; i < 25; i++) {
+    const total = incrementUsage(db, "k1", "2026-07", i % 2 ? "hl_whale_positions" : "hl_funding_screener");
+    assert.ok(total > prev, "usage must never go backwards");
+    prev = total;
+  }
+  assert.equal(monthlyTotal(db, "k1", "2026-07"), 25);
+  // A new period starts clean; another key is untouched.
+  assert.equal(monthlyTotal(db, "k1", "2026-08"), 0);
+  assert.equal(monthlyTotal(db, "k2", "2026-07"), 0);
+});
+
+test("INV-S6: a cohort refresh is an atomic all-or-nothing snapshot", async () => {
+  const { CohortStore } = await import("../src/store/cohortStore.js");
+  const db = new BetterSqlite3(":memory:");
+  const store = new CohortStore(db);
+
+  store.replace(
+    [
+      { address: "0xa", accountValue: 300, pnl: 1, rankBy: 300 },
+      { address: "0xb", accountValue: 200, pnl: 1, rankBy: 200 },
+    ],
+    "accountValue",
+    1000,
+  );
+  assert.deepEqual(store.get(10, 1000)?.addresses, ["0xa", "0xb"]);
+
+  // A replace must swap the whole set: no wallet from the previous snapshot may
+  // survive, or the cohort would mix rankings from two different moments.
+  store.replace([{ address: "0xc", accountValue: 500, pnl: 1, rankBy: 500 }], "pnlMonth", 2000);
+  const snap = store.get(10, 2000);
+  assert.deepEqual(snap?.addresses, ["0xc"]);
+  assert.equal(snap?.strategy, "pnlMonth");
+  assert.equal(snap?.ageSeconds, 0);
+  // Age is reported from the snapshot time, so staleness is visible.
+  assert.equal(store.get(10, 2000 + 3_600_000)?.ageSeconds, 3600);
+});
+
+test("INV-U3: signal horizons are minutes and score horizons are days", () => {
+  // These two live side by side in the same engine tick. Confusing them would
+  // score a 24h signal after 24 minutes, or resolve a 30-day outcome after 30.
+  const DAY_MS = 86_400_000;
+  const signalHorizonMinutes = 1440;
+  assert.equal(signalHorizonMinutes * 60_000, DAY_MS, "1440 minutes must be one day");
+  assert.equal(SCORE_HORIZON_DAYS * DAY_MS, 30 * DAY_MS, "score horizon is expressed in days");
+  // The tolerance helper works in minutes and returns ms.
+  assert.equal(scoreTolerangeMs(1440), 1440 * 60_000 * 0.05);
+  assert.equal(scoreTolerangeMs(1), 5 * 60_000, "floor of 5 minutes for short horizons");
 });
 
 test("score store dedupes one observation per address per day", () => {

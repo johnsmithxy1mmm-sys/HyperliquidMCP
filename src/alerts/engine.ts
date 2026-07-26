@@ -8,6 +8,7 @@
  */
 import type { HyperliquidClient } from "../core/hlClient.js";
 import type { Warehouse } from "../store/warehouse.js";
+import { scoreTolerangeMs, type ScoreSource } from "../store/signalStore.js";
 import type { SignalSigner } from "../signals/signer.js";
 import { getMarketRows } from "../hl/markets.js";
 import { fetchCohortAccounts, aggregateByCoin } from "../hl/whales.js";
@@ -18,6 +19,13 @@ import { shortHash } from "../core/format.js";
 import { log } from "../logger.js";
 
 const PRICE_NS = "alertPrice";
+
+/**
+ * How long past its horizon a signal may stay unscored before it is abandoned.
+ * Hyperliquid's candle history is finite, so a signal that goes unpriced for
+ * this long is never going to be priceable.
+ */
+const MAX_SCORING_LAG_MS = 7 * 86_400_000;
 
 export class AlertEngine {
   private timer: NodeJS.Timeout | undefined;
@@ -179,15 +187,64 @@ export class AlertEngine {
     }
   }
 
+  /**
+   * Score signals whose horizon has elapsed, AT their horizon.
+   *
+   * Using the current tick price is only honest when the tick is on time. A
+   * signal that came due while the process was down (or while Hyperliquid was
+   * unreachable, since tick() swallows those errors) would otherwise be priced
+   * days later, publishing an arbitrary multi-day move as its 24h forward
+   * return. Late signals are therefore priced from the candle at their horizon;
+   * if that price cannot be obtained, the signal is marked stale and excluded
+   * from the track record rather than measured against the wrong moment.
+   */
   private async scoreDueSignals(marketByCoin: Map<string, { markPx: number }>, now: number): Promise<void> {
     const due = this.store.signals.dueForScoring(now);
     for (const s of due) {
-      const m = marketByCoin.get(s.coin);
-      if (!m || !(s.refPx > 0)) continue;
-      const raw = (m.markPx - s.refPx) / s.refPx;
+      if (!(s.refPx > 0)) {
+        this.store.signals.markStale(s.id, now);
+        continue;
+      }
+      const dueAt = s.ts + s.horizonMinutes * 60_000;
+      const late = now - dueAt;
+
+      let px: number | undefined;
+      let source: ScoreSource = "live";
+      if (late <= scoreTolerangeMs(s.horizonMinutes)) {
+        px = marketByCoin.get(s.coin)?.markPx;
+      } else {
+        px = await this.priceAt(s.coin, dueAt);
+        source = "historical";
+      }
+
+      if (px === undefined || !(px > 0)) {
+        // Only give up once the horizon is far enough past that a price is
+        // never going to arrive; otherwise leave it for the next tick.
+        if (late > MAX_SCORING_LAG_MS) this.store.signals.markStale(s.id, now);
+        continue;
+      }
+      const raw = (px - s.refPx) / s.refPx;
       // Direction-adjusted forward return: a correct short on a drop scores positive.
       const adj = s.direction === "short" ? -raw : raw;
-      this.store.signals.setScore(s.id, m.markPx, adj, now);
+      this.store.signals.setScore(s.id, px, adj, now, source);
+    }
+  }
+
+  /** Close price of the 1m candle covering `at`, or undefined if unavailable. */
+  private async priceAt(coin: string, at: number): Promise<number | undefined> {
+    try {
+      const candles = await this.hl.candles(coin, "1m", at - 5 * 60_000, at + 5 * 60_000);
+      if (!Array.isArray(candles) || candles.length === 0) return undefined;
+      // The candle whose open time is closest to (but not after) the horizon.
+      let best: { t: number; c: string } | undefined;
+      for (const c of candles) {
+        if (c.t <= at && (best === undefined || c.t > best.t)) best = c;
+      }
+      const px = Number((best ?? candles[0]).c);
+      return Number.isFinite(px) && px > 0 ? px : undefined;
+    } catch (err) {
+      log.warn("historical price lookup failed", { coin, at, err: String(err) });
+      return undefined;
     }
   }
 }

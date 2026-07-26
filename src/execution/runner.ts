@@ -83,9 +83,11 @@ export class ExecutionRunner {
 
     const timers: NodeJS.Timeout[] = [];
     for (const child of args.children) {
-      const t = setTimeout(() => void this.fireChild(plan, child, args), child.atOffsetMs);
-      t.unref?.();
-      timers.push(t);
+      // Deliberately NOT unref'd. An unref'd timer lets the process exit with
+      // child orders still pending, leaving a half-filled position and no
+      // record of it — the plan lives only in memory. A live execution must
+      // hold the process open until it finishes or is cancelled.
+      timers.push(setTimeout(() => void this.fireChild(plan, child, args), child.atOffsetMs));
     }
     this.timers.set(id, timers);
     return plan;
@@ -120,6 +122,34 @@ export class ExecutionRunner {
     // finalize when all children resolved
     if (plan.children.every((c) => c.status !== "pending")) {
       plan.status = plan.children.some((c) => c.status === "error") ? "failed" : "completed";
+      // Release the handles so a finished plan no longer holds the process open.
+      for (const t of this.timers.get(plan.id) ?? []) clearTimeout(t);
+      this.timers.delete(plan.id);
     }
+  }
+
+  /** Plans with child orders still scheduled. */
+  pending(): ExecutionPlan[] {
+    return [...this.plans.values()].filter(
+      (p) => p.status === "running" && p.children.some((c) => c.status === "pending"),
+    );
+  }
+
+  /**
+   * Cancel every in-flight plan and report what was left unfilled.
+   *
+   * Called on shutdown: the already-submitted children are real positions on
+   * the exchange, so the operator has to be told what the plan did NOT finish.
+   * The plan itself is in-memory and does not survive the restart.
+   */
+  cancelAllPending(): Array<{ id: string; coin: string; side: string; submitted: number; unfilled: number }> {
+    const out = [];
+    for (const plan of this.pending()) {
+      const submitted = plan.children.filter((c) => c.status === "submitted").length;
+      const unfilled = plan.children.filter((c) => c.status === "pending").length;
+      this.cancel(plan.id);
+      out.push({ id: plan.id, coin: plan.coin, side: plan.side, submitted, unfilled });
+    }
+    return out;
   }
 }

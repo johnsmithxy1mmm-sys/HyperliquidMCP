@@ -40,6 +40,27 @@ async function main(): Promise<void> {
   // triggers it; set HL_SCORE_SAMPLE_ENABLED=false to opt out entirely.
   new ScoreSampler(cohortCtx).start();
 
+  // A live TWAP holds the process open until it completes. On shutdown the
+  // already-submitted child orders are real positions, so report what was left
+  // unfilled instead of exiting silently — the plan is in-memory and will not
+  // survive the restart.
+  const onShutdown = (signal: string): void => {
+    const abandoned = execution.cancelAllPending();
+    for (const p of abandoned) {
+      log.warn("execution plan abandoned on shutdown", {
+        signal,
+        plan: p.id,
+        coin: p.coin,
+        side: p.side,
+        submittedChildren: p.submitted,
+        unfilledChildren: p.unfilled,
+      });
+    }
+    process.exit(0);
+  };
+  process.once("SIGINT", () => onShutdown("SIGINT"));
+  process.once("SIGTERM", () => onShutdown("SIGTERM"));
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
   log.info("hypersignal-mcp stdio ready", {

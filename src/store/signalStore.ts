@@ -4,6 +4,24 @@
  */
 import type Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
+import { log } from "../logger.js";
+
+/**
+ * How a signal's forward return was measured.
+ *   live       — priced at its horizon, within tolerance. Trustworthy.
+ *   historical — priced from the candle at its horizon, after the fact.
+ *                Equally valid; just resolved late.
+ *   stale      — the horizon passed and no price for that moment could be
+ *                obtained. NOT counted in the track record: pricing it at
+ *                "whenever the engine next ran" would publish an arbitrary
+ *                multi-day move as a 24h result.
+ */
+export type ScoreSource = "live" | "historical" | "stale";
+
+/** Lateness allowed before a "current price" reading stops being honest. */
+export function scoreTolerangeMs(horizonMinutes: number): number {
+  return Math.max(5 * 60_000, horizonMinutes * 60_000 * 0.05);
+}
 
 export interface SignalRow {
   id: string;
@@ -17,6 +35,7 @@ export interface SignalRow {
   scoredAt: number | null;
   scoredPx: number | null;
   forwardReturn: number | null; // signed, direction-adjusted fraction
+  scoreSource: ScoreSource | null;
 }
 
 export interface TrackRecord {
@@ -27,6 +46,8 @@ export interface TrackRecord {
   hitRatePct: number;
   avgReturnPct: number;
   medianReturnPct: number;
+  /** Signals dropped from the stats because their horizon price was unobtainable. */
+  excludedStale: number;
 }
 
 export class SignalStore {
@@ -48,6 +69,45 @@ export class SignalStore {
       CREATE INDEX IF NOT EXISTS idx_signals_type ON signals(type);
       CREATE INDEX IF NOT EXISTS idx_signals_unscored ON signals(scored_at, ts);
     `);
+    this.migrateScoreSource();
+  }
+
+  /**
+   * Add score_source and classify pre-existing rows.
+   *
+   * Rows scored before this column existed were priced at whatever the market
+   * was doing when the engine happened to run, which for a late run is not the
+   * forward return the signal claimed. Their lateness is recoverable —
+   * scored_at minus (ts + horizon) — so history is preserved and classified
+   * rather than discarded: on-time rows stay in the record, late ones are kept
+   * in the table but marked stale and excluded from the published stats.
+   */
+  private migrateScoreSource(): void {
+    const cols = this.db.prepare(`PRAGMA table_info(signals)`).all() as Array<{ name: string }>;
+    if (cols.some((c) => c.name === "score_source")) return;
+
+    this.db.exec(`ALTER TABLE signals ADD COLUMN score_source TEXT`);
+    const rows = this.db
+      .prepare(`SELECT id, ts, horizon_minutes, scored_at FROM signals WHERE scored_at IS NOT NULL`)
+      .all() as Array<{ id: string; ts: number; horizon_minutes: number; scored_at: number }>;
+
+    const set = this.db.prepare(`UPDATE signals SET score_source = ? WHERE id = ?`);
+    let live = 0;
+    let stale = 0;
+    const tx = this.db.transaction(() => {
+      for (const r of rows) {
+        const dueAt = r.ts + r.horizon_minutes * 60_000;
+        const late = r.scored_at - dueAt;
+        const onTime = late <= scoreTolerangeMs(r.horizon_minutes);
+        set.run(onTime ? "live" : "stale", r.id);
+        if (onTime) live++;
+        else stale++;
+      }
+    });
+    tx();
+    if (rows.length > 0) {
+      log.info("signals: classified pre-existing scores", { live, stale: stale, total: rows.length });
+    }
   }
 
   record(input: {
@@ -79,10 +139,29 @@ export class SignalStore {
     return rows.map(mapRow);
   }
 
-  setScore(id: string, scoredPx: number, forwardReturn: number, scoredAt = Date.now()): void {
+  setScore(
+    id: string,
+    scoredPx: number,
+    forwardReturn: number,
+    scoredAt = Date.now(),
+    source: ScoreSource = "live",
+  ): void {
     this.db
-      .prepare(`UPDATE signals SET scored_at = ?, scored_px = ?, forward_return = ? WHERE id = ?`)
-      .run(scoredAt, scoredPx, forwardReturn, id);
+      .prepare(`UPDATE signals SET scored_at = ?, scored_px = ?, forward_return = ?, score_source = ? WHERE id = ?`)
+      .run(scoredAt, scoredPx, forwardReturn, source, id);
+  }
+
+  /**
+   * Close out a signal whose horizon price could not be obtained. scored_at is
+   * set so it stops being retried forever, but forward_return stays NULL so it
+   * can never enter the statistics.
+   */
+  markStale(id: string, scoredAt = Date.now()): void {
+    this.db
+      .prepare(
+        `UPDATE signals SET scored_at = ?, forward_return = NULL, score_source = 'stale' WHERE id = ?`,
+      )
+      .run(scoredAt, id);
   }
 
   trackRecord(type?: string): TrackRecord[] {
@@ -102,7 +181,10 @@ export class SignalStore {
     }
     const out: TrackRecord[] = [];
     for (const [t, sigs] of byType) {
-      const scored = sigs.filter((s) => s.forwardReturn !== null);
+      // Only measurements taken AT the signal's horizon count. A stale row was
+      // priced at an arbitrary later moment; including it would publish a
+      // multi-day move as a 24h result.
+      const scored = sigs.filter((s) => s.forwardReturn !== null && s.scoreSource !== "stale");
       const returns = scored.map((s) => s.forwardReturn as number);
       const wins = returns.filter((r) => r > 0).length;
       out.push({
@@ -113,6 +195,7 @@ export class SignalStore {
         hitRatePct: scored.length ? round((wins / scored.length) * 100) : 0,
         avgReturnPct: returns.length ? round((returns.reduce((a, b) => a + b, 0) / returns.length) * 100) : 0,
         medianReturnPct: returns.length ? round(median(returns) * 100) : 0,
+        excludedStale: sigs.filter((s) => s.scoreSource === "stale").length,
       });
     }
     return out.sort((a, b) => b.scored - a.scored);
@@ -131,6 +214,7 @@ interface RawSignal {
   scored_at: number | null;
   scored_px: number | null;
   forward_return: number | null;
+  score_source: string | null;
 }
 
 function mapRow(r: RawSignal): SignalRow {
@@ -146,6 +230,7 @@ function mapRow(r: RawSignal): SignalRow {
     scoredAt: r.scored_at,
     scoredPx: r.scored_px,
     forwardReturn: r.forward_return,
+    scoreSource: (r.score_source as ScoreSource | null) ?? null,
   };
 }
 
