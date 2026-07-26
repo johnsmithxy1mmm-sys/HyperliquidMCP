@@ -15,6 +15,7 @@ import { getOpenOrders } from "./free/getOpenOrders.js";
 import { signalPubkey } from "./free/signalPubkey.js";
 import { adminStats } from "./free/adminStats.js";
 import { scoreCalibration } from "./free/scoreCalibration.js";
+import { requestFreeKey } from "./free/requestFreeKey.js";
 // Premium
 import { whalePositions } from "./premium/whalePositions.js";
 import { whaleFlowAlerts } from "./premium/whaleFlowAlerts.js";
@@ -36,6 +37,7 @@ import { approveBuilderFeeGuide } from "./trading/approveBuilderFeeGuide.js";
 import { twapOrder, copyWallet, executionStatus } from "./trading/execution.js";
 
 export const FREE_TOOLS: ToolDef[] = [
+  requestFreeKey,
   getMarkets,
   getOrderbook,
   getCandles,

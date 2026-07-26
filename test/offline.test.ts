@@ -634,6 +634,45 @@ test("reliable alert polling redelivers until acked; autoAck stays at-most-once"
   assert.equal(store.pollUnacked("subj", 50, false).length, 1);
 });
 
+test("self-serve free key: one active key per fingerprint, re-issue is not a quota reset", async () => {
+  const { getFreeKeyGrant, recordFreeKeyGrant, incrementUsage, monthlyTotal, upsertKey, getKey } = await import(
+    "../src/billing/db.js"
+  );
+  const db = new BetterSqlite3(":memory:");
+  db.exec(`
+    CREATE TABLE api_keys (key_hash TEXT PRIMARY KEY, tier TEXT NOT NULL, label TEXT, created_at INTEGER NOT NULL, disabled INTEGER NOT NULL DEFAULT 0);
+    CREATE TABLE usage_counters (key_hash TEXT NOT NULL, period TEXT NOT NULL, tool TEXT NOT NULL, count INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (key_hash, period, tool));
+    CREATE TABLE free_key_grants (fingerprint TEXT PRIMARY KEY, key_hash TEXT NOT NULL, granted_at INTEGER NOT NULL, grants INTEGER NOT NULL DEFAULT 1);
+  `);
+  const fp = "fingerprint-a";
+
+  upsertKey(db, "hash1", "free", "self-serve");
+  recordFreeKeyGrant(db, fp, "hash1");
+  // Burn 40 of the monthly allowance on the first key.
+  for (let i = 0; i < 40; i++) incrementUsage(db, "hash1", "2026-07", "hl_whale_positions");
+  assert.equal(monthlyTotal(db, "hash1", "2026-07"), 40);
+
+  // Re-issue: the old key must die and its usage must follow the new key,
+  // otherwise "lose your key, ask again" mints unlimited fresh allowances.
+  upsertKey(db, "hash2", "free", "self-serve");
+  recordFreeKeyGrant(db, fp, "hash2");
+
+  assert.equal(getKey(db, "hash1")?.disabled, 1, "old key must be revoked");
+  assert.equal(getKey(db, "hash2")?.disabled, 0, "new key must be active");
+  assert.equal(monthlyTotal(db, "hash2", "2026-07"), 40, "usage must carry over");
+  assert.equal(monthlyTotal(db, "hash1", "2026-07"), 0);
+
+  const grant = getFreeKeyGrant(db, fp);
+  assert.equal(grant?.keyHash, "hash2");
+  assert.equal(grant?.grants, 2, "grant count tracks re-issues");
+
+  // A different fingerprint is independent.
+  upsertKey(db, "hash3", "free", "self-serve");
+  recordFreeKeyGrant(db, "fingerprint-b", "hash3");
+  assert.equal(monthlyTotal(db, "hash3", "2026-07"), 0);
+  assert.equal(getKey(db, "hash2")?.disabled, 0, "another requester must not revoke this one");
+});
+
 test("score store dedupes one observation per address per day", () => {
   const db = new BetterSqlite3(":memory:");
   const store = new ScoreStore(db);

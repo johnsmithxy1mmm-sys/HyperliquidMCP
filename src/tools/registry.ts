@@ -21,6 +21,15 @@ import { log } from "../logger.js";
 
 export type Tier = "free" | "premium" | "trading";
 
+/**
+ * The slice of BillingService tools may use. Declared structurally so the tool
+ * layer does not depend on the billing module (which owns the SQLite handle).
+ */
+export interface BillingLike {
+  issueFreeKey(fingerprint: string): { rawKey: string; monthlyPremiumCalls: number; reissued: boolean };
+  freeKeyUsage(fingerprint: string): number | null;
+}
+
 export interface ToolContext {
   config: Config;
   hl: HyperliquidClient;
@@ -33,6 +42,14 @@ export interface ToolContext {
   /** Owner identity for per-subject resources (alerts). "local" in stdio. */
   subject: string;
   mode: "stdio" | "http";
+  /**
+   * Client IP, http mode only. Used solely to rate-bound self-serve free keys;
+   * it is hashed before storage and never logged raw. Requires TRUST_PROXY
+   * behind a reverse proxy, otherwise every client shares the proxy's address.
+   */
+  clientIp?: string;
+  /** Billing service, http mode only (self-serve key issuance). */
+  billing?: BillingLike;
   /** Premium billing gate. Free/trading tools ignore it; premium tools await it first. */
   authorize: (toolName: string) => Promise<void>;
   /** Present only in stdio mode when trading is enabled. */
@@ -66,13 +83,32 @@ export interface ToolDef {
   run: (args: Record<string, unknown>, ctx: ToolContext) => Promise<{ summary: string; data: unknown }>;
 }
 
+/**
+ * Prefix premium descriptions with their access requirement.
+ *
+ * An agent picks a tool by reading its description. Without this, 16 of 25
+ * tools look free, the agent picks one, and its first real call is a refusal —
+ * which is where new users were being lost. Applied centrally so a tool cannot
+ * be added later and silently miss the label.
+ *
+ * stdio never meters, so the label would be a lie there and is omitted.
+ */
+function describeFor(def: ToolDef, ctx: ToolContext): string {
+  if (def.tier !== "premium" || ctx.mode !== "http") return def.description;
+  return (
+    "[PREMIUM — needs an API key: call hl_request_free_key first for a free key, " +
+    "or pay per call via x402] " +
+    def.description
+  );
+}
+
 /** Register a single tool onto the server, wrapping billing + error handling. */
 export function registerTool(server: McpServer, def: ToolDef, ctx: ToolContext): void {
   server.registerTool(
     def.name,
     {
       title: def.title,
-      description: def.description,
+      description: describeFor(def, ctx),
       inputSchema: def.inputSchema,
       ...(def.outputSchema ? { outputSchema: def.outputSchema } : {}),
       annotations: { title: def.title, ...def.annotations },

@@ -10,12 +10,12 @@ import type { SnapshotStore } from "./core/snapshots.js";
 import { Warehouse } from "./store/warehouse.js";
 import { SignalSigner } from "./signals/signer.js";
 import { registerTools } from "./tools/index.js";
-import type { ToolContext, Tier } from "./tools/registry.js";
+import type { ToolContext, Tier, BillingLike } from "./tools/registry.js";
 import type { TradingService } from "./trading/exchange.js";
 import type { ExecutionRunner } from "./execution/runner.js";
 
 export const SERVER_NAME = "hypersignal-mcp";
-export const SERVER_VERSION = "1.3.1";
+export const SERVER_VERSION = "1.4.0";
 
 /** Long-lived singletons shared across requests. */
 export class Core {
@@ -42,6 +42,10 @@ export interface BuildServerOptions {
   authorize?: (toolName: string) => Promise<void>;
   trading?: TradingService;
   execution?: ExecutionRunner;
+  /** Client IP (http only) — bounds self-serve free-key issuance. */
+  clientIp?: string;
+  /** Billing service (http only) — self-serve free-key issuance. */
+  billing?: BillingLike;
 }
 
 const NO_AUTH = async (): Promise<void> => {
@@ -71,6 +75,8 @@ export function buildServer(core: Core, opts: BuildServerOptions): McpServer {
     authorize: opts.authorize ?? NO_AUTH,
     trading: opts.trading,
     execution: opts.execution,
+    clientIp: opts.clientIp,
+    billing: opts.billing,
   };
 
   registerTools(server, ctx, opts.tiers);

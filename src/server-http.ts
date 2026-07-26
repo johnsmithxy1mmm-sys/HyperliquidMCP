@@ -97,6 +97,18 @@ async function main(): Promise<void> {
     });
   }
 
+  // Behind a proxy without TRUST_PROXY, every client presents the proxy's
+  // address. Self-serve free keys are bounded per client IP and re-issuing
+  // revokes the previous key for that IP — so a shared address means each new
+  // requester silently revokes the last one's key. Loud, because the symptom
+  // (keys mysteriously stop working) points nowhere near the cause.
+  if (!envFlag("TRUST_PROXY")) {
+    log.warn(
+      "TRUST_PROXY is off: if this server sits behind Fly/Nginx/Caddy, all clients share one IP, " +
+        "so self-serve free keys will revoke each other. Set TRUST_PROXY=true when deployed behind a proxy.",
+    );
+  }
+
   const maxPerMinute = Math.max(1, Number(process.env.HTTP_RATE_LIMIT_PER_MIN ?? 120) || 120);
   app.use(config.httpPath, ipLimiter(maxPerMinute));
 
@@ -124,7 +136,14 @@ async function main(): Promise<void> {
     const subject = billing.subjectFor({ apiKey, xPayment });
 
     // Stateless: fresh server + transport per request.
-    const server = buildServer(core, { tiers: ["free", "premium"], mode: "http", subject, authorize });
+    const server = buildServer(core, {
+      tiers: ["free", "premium"],
+      mode: "http",
+      subject,
+      authorize,
+      clientIp: req.ip,
+      billing,
+    });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true,

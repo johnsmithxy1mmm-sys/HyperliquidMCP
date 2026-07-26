@@ -45,6 +45,7 @@ that attaches a builder code to orders.
 | `hl_create_alert` / `hl_list_alerts` / `hl_delete_alert` | premium | Register/manage **standing alerts** (funding threshold, price move, whale net-flip). The server evaluates them on a schedule — it watches the market for your agent. |
 | `hl_poll_alerts` | premium | Retrieve fired alert events since your last poll (at-least-once), each with a signed signal payload. |
 | `hl_signal_track_record` | premium | Transparent, **verifiable performance** of emitted signals: hit-rate and avg/median direction-adjusted forward return per signal type. |
+| `hl_request_free_key` | free | **Self-serve API key** — one call, no signup, grants 100 premium calls/month. Send it as `X-API-Key`. This is the intended first call for any new agent: premium tools point at it by name when they need a key. |
 | `hl_signal_pubkey` | free | Ed25519 public key to independently **verify** any signal's authenticity + timestamp. |
 | `hl_admin_stats` | free (own gate) | **Operator only** — requires `adminSecret` matching `HYPERSIGNAL_ADMIN_SECRET`. Per-key usage this billing period, top tools, active alerts, signal track record, x402 payment counts. |
 | `hl_smart_money_score` | premium | Rank a cohort by a **smart-money screening score** (risk-adjusted perf + winrate + reward/risk + size + activity) with behavioral **labels** (whale, sharp, scalper, market_maker_like, high_conviction, …). A descriptive screener over past results — see `hl_score_calibration` before treating it as a forecast. |

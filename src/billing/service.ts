@@ -6,11 +6,21 @@
  * otherwise x402 pay-per-call. On denial, throws PaymentRequiredError carrying
  * x402 requirements + upgrade guidance so the agent knows exactly what to do.
  */
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { Config } from "../config.js";
 import { PaymentRequiredError } from "../core/errors.js";
-import { getDb, getKey, incrementUsage, monthlyTotal, upsertKey, disableMissingBootstrapKeys } from "./db.js";
+import {
+  getDb,
+  getKey,
+  incrementUsage,
+  monthlyTotal,
+  upsertKey,
+  disableMissingBootstrapKeys,
+  getFreeKeyGrant,
+  countFreeKeyGrants,
+  recordFreeKeyGrant,
+} from "./db.js";
 import { tierFor, TIERS, type TierName } from "./tiers.js";
 import { buildPaymentRequirements, verifyPayment } from "./x402.js";
 import { log } from "../logger.js";
@@ -19,6 +29,9 @@ export interface RequestAuth {
   apiKey?: string;
   xPayment?: string;
 }
+
+/** Ceiling on distinct self-serve fingerprints, so the grants table is bounded. */
+const MAX_SELF_SERVE_KEYS = 5_000;
 
 export class BillingService {
   private readonly db: Database.Database;
@@ -62,6 +75,42 @@ export class BillingService {
   private period(): string {
     const d = new Date();
     return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+  }
+
+  /**
+   * Issue a self-serve free key to a client fingerprint (a hashed IP).
+   *
+   * Without this, the payment-required error advertises a free tier that has no
+   * self-serve path — the requester is told the door is open and handed no key.
+   *
+   * Abuse bounds: exactly one ACTIVE free key per fingerprint (re-issuing
+   * revokes the old one and carries its monthly usage across, so re-requesting
+   * is not a quota reset), plus a global ceiling on distinct fingerprints so
+   * the table cannot be grown without limit.
+   */
+  issueFreeKey(fingerprint: string): { rawKey: string; monthlyPremiumCalls: number; reissued: boolean } {
+    const prior = getFreeKeyGrant(this.db, fingerprint);
+    if (!prior && countFreeKeyGrants(this.db) >= MAX_SELF_SERVE_KEYS) {
+      throw new Error(
+        `Self-serve free keys are exhausted (${MAX_SELF_SERVE_KEYS} issued). Contact the operator for a key.`,
+      );
+    }
+    const rawKey = `hs_free_${randomBytes(24).toString("base64url")}`;
+    const keyHash = this.hash(rawKey);
+    upsertKey(this.db, keyHash, "free", "self-serve");
+    recordFreeKeyGrant(this.db, fingerprint, keyHash);
+    log.info("self-serve free key issued", { reissued: Boolean(prior), grants: (prior?.grants ?? 0) + 1 });
+    return {
+      rawKey,
+      monthlyPremiumCalls: TIERS.free.monthlyPremiumCalls ?? 0,
+      reissued: Boolean(prior),
+    };
+  }
+
+  /** Premium calls already used this period by the key behind `fingerprint`. */
+  freeKeyUsage(fingerprint: string): number | null {
+    const grant = getFreeKeyGrant(this.db, fingerprint);
+    return grant ? monthlyTotal(this.db, grant.keyHash, this.period()) : null;
   }
 
   /** Stable per-key owner id for per-subject resources (alerts). "anon" if no valid key. */
@@ -108,11 +157,18 @@ export class BillingService {
         );
       }
 
-      // No key / quota and x402 disabled.
+      // No key / quota and x402 disabled. The message MUST carry a usable next
+      // step: advertising a free tier with no way to obtain it is a dead end,
+      // and a dead end here is where every new user is lost.
+      const outOfQuota = Boolean(keyRow);
       throw new PaymentRequiredError(
-        `Premium tool "${toolName}" requires a valid API key. ` +
-          `Free keys get ${TIERS.free.monthlyPremiumCalls} premium calls/month; Pro is unlimited at $${TIERS.pro.priceUsdMonth}/mo.`,
-        { toolName, tiers: TIERS },
+        outOfQuota
+          ? `Premium tool "${toolName}": this key's ${TIERS.free.monthlyPremiumCalls} free premium calls for the ` +
+            `month are used up. Pro is unlimited at $${TIERS.pro.priceUsdMonth}/mo.`
+          : `Premium tool "${toolName}" needs an API key. Call hl_request_free_key to get one instantly — ` +
+            `it is free and grants ${TIERS.free.monthlyPremiumCalls} premium calls/month. ` +
+            `Then retry this call with the key in the X-API-Key header.`,
+        { toolName, tiers: TIERS, nextStep: outOfQuota ? "upgrade_to_pro" : "call hl_request_free_key" },
       );
     };
   }

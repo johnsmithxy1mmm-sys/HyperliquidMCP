@@ -46,6 +46,14 @@ export function getDb(path: string): Database.Database {
       payment_id TEXT PRIMARY KEY,
       created_at INTEGER NOT NULL
     );
+    -- Self-serve free keys. Keyed by a HASHED client fingerprint (never the raw
+    -- IP) so one requester holds at most one active free key at a time.
+    CREATE TABLE IF NOT EXISTS free_key_grants (
+      fingerprint TEXT PRIMARY KEY,
+      key_hash    TEXT NOT NULL,
+      granted_at  INTEGER NOT NULL,
+      grants      INTEGER NOT NULL DEFAULT 1
+    );
   `);
   log.info("billing db ready", { path });
   return db;
@@ -135,4 +143,58 @@ export function consumePaymentId(database: Database.Database, paymentId: string)
  */
 export function releasePaymentId(database: Database.Database, paymentId: string): void {
   database.prepare(`DELETE FROM x402_payments WHERE payment_id = ?`).run(paymentId);
+}
+
+export interface FreeKeyGrant {
+  fingerprint: string;
+  keyHash: string;
+  grantedAt: number;
+  grants: number;
+}
+
+export function getFreeKeyGrant(database: Database.Database, fingerprint: string): FreeKeyGrant | undefined {
+  const row = database.prepare(`SELECT * FROM free_key_grants WHERE fingerprint = ?`).get(fingerprint) as
+    | { fingerprint: string; key_hash: string; granted_at: number; grants: number }
+    | undefined;
+  return row
+    ? { fingerprint: row.fingerprint, keyHash: row.key_hash, grantedAt: row.granted_at, grants: row.grants }
+    : undefined;
+}
+
+export function countFreeKeyGrants(database: Database.Database): number {
+  return (database.prepare(`SELECT COUNT(*) AS c FROM free_key_grants`).get() as { c: number }).c;
+}
+
+/**
+ * Record a self-serve free key for a fingerprint, replacing any previous one.
+ *
+ * Re-issuing revokes the old key AND moves its usage counters onto the new
+ * hash. Without the transfer, "lose the key, ask again" would be a free quota
+ * reset — one requester could mint an unlimited number of 100-call allowances.
+ * Atomic so a crash can never leave a live old key beside a fresh counter.
+ */
+export function recordFreeKeyGrant(
+  database: Database.Database,
+  fingerprint: string,
+  newKeyHash: string,
+  now = Date.now(),
+): void {
+  const tx = database.transaction(() => {
+    const prior = getFreeKeyGrant(database, fingerprint);
+    if (prior) {
+      database.prepare(`UPDATE api_keys SET disabled = 1 WHERE key_hash = ?`).run(prior.keyHash);
+      database.prepare(`UPDATE usage_counters SET key_hash = ? WHERE key_hash = ?`).run(newKeyHash, prior.keyHash);
+    }
+    database
+      .prepare(
+        `INSERT INTO free_key_grants (fingerprint, key_hash, granted_at, grants)
+         VALUES (?, ?, ?, 1)
+         ON CONFLICT(fingerprint) DO UPDATE SET
+           key_hash = excluded.key_hash,
+           granted_at = excluded.granted_at,
+           grants = grants + 1`,
+      )
+      .run(fingerprint, newKeyHash, now);
+  });
+  tx();
 }
