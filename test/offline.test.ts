@@ -984,3 +984,90 @@ function mkAcct(
     },
   };
 }
+
+// ---------------------------------------------------------------------------
+// Ladder coherence (lessons from the Octagon BTC-2026 report comparison)
+// ---------------------------------------------------------------------------
+
+test("ladder coherence catches the four impossible orderings from the Octagon report", async () => {
+  const { findLadderViolations } = await import("../src/polymarket/coherence.js");
+  const END = "2026-12-31T23:59:00-05:00";
+  const mk = (thresholdUsd: number, yesProb: number) => ({
+    question: `Will Bitcoin reach $${thresholdUsd} by December 31, 2026?`,
+    slug: `up${thresholdUsd}`,
+    thresholdUsd,
+    mode: "touch" as const,
+    yesProb,
+    endDate: END,
+    liquidityUsd: 1000,
+  });
+  // The report's upside rungs around the violation cluster.
+  const entries = [mk(160000, 0.028), mk(170000, 0.018), mk(180000, 0.021), mk(190000, 0.022), mk(200000, 0.02)];
+  const v = findLadderViolations(entries);
+  // All-pairs, not adjacent-only: 170<180, 170<190, 170<200, 180<190.
+  assert.equal(v.length, 4);
+  const pairs = v.map((x) => `${x.nearer.thresholdUsd}<${x.further.thresholdUsd}`).sort();
+  assert.deepEqual(pairs, ["170000<180000", "170000<190000", "170000<200000", "180000<190000"]);
+  // Sorted by gap: the worst violation (170k vs 190k, 0.4pp) first.
+  assert.equal(v[0].further.thresholdUsd, 190000);
+  assert.ok(v[0].gap > v[v.length - 1].gap);
+});
+
+test("ladder coherence: downward ladders, mode isolation, and deadline isolation", async () => {
+  const { findLadderViolations } = await import("../src/polymarket/coherence.js");
+  const END = "2026-12-31T23:59:00-05:00";
+  const down = (k: number, p: number, endDate: string = END, mode: "touch_below" | "below" = "touch_below") => ({
+    question: `Will Bitcoin drop to $${k}?`,
+    slug: `d${k}${mode}${endDate}`,
+    thresholdUsd: k,
+    mode,
+    yesProb: p,
+    endDate,
+    liquidityUsd: 1,
+  });
+
+  // Downward: lower threshold = harder. 10k priced above 15k is impossible.
+  const v = findLadderViolations([down(20000, 0.016), down(15000, 0.017), down(10000, 0.023)]);
+  assert.equal(v.length, 3); // 20<15 (0.1pp), 20<10 (0.7pp), 15<10 (0.6pp)
+  assert.equal(v[0].further.thresholdUsd, 10000);
+
+  // Different modes are never compared even with identical thresholds/deadlines.
+  assert.equal(
+    findLadderViolations([down(15000, 0.01, END, "touch_below"), down(10000, 0.99, END, "below")]).length,
+    0,
+  );
+  // Different deadlines are a date ladder, not a value ladder — not compared.
+  assert.equal(
+    findLadderViolations([down(15000, 0.01, "2026-06-30"), down(10000, 0.99, END)]).length,
+    0,
+  );
+  // A coherent ladder yields nothing.
+  assert.equal(findLadderViolations([down(20000, 0.03), down(15000, 0.02), down(10000, 0.01)]).length, 0);
+});
+
+test("duplicate contract listings collapse to the most liquid copy", async () => {
+  const { dedupeLadderEntries } = await import("../src/polymarket/coherence.js");
+  const END = "2026-12-31T23:59:00-05:00";
+  const row = (slug: string, yesProb: number, liquidityUsd: number) => ({
+    question: "Will Bitcoin drop to $60,000 by December 31, 2026?",
+    slug,
+    thresholdUsd: 60000,
+    mode: "touch_below" as const,
+    yesProb,
+    endDate: END,
+    liquidityUsd,
+  });
+  // The Octagon table listed one ↓$60k contract four times at four prices.
+  const { unique, dropped } = dedupeLadderEntries([
+    row("a", 0.999, 50),
+    row("b", 0.37, 155_000),
+    row("c", 0.0, 0),
+    row("d", 0.999, 137_000),
+  ]);
+  assert.equal(dropped, 3);
+  assert.equal(unique.length, 1);
+  assert.equal(unique[0].slug, "b"); // the liquid copy survives, whatever arrived first
+  // Distinct thresholds are never merged.
+  const distinct = dedupeLadderEntries([row("a", 0.5, 1), { ...row("b", 0.4, 1), thresholdUsd: 55000 }]);
+  assert.equal(distinct.dropped, 0);
+});
