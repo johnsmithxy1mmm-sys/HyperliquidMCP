@@ -12,6 +12,7 @@ import type Database from "better-sqlite3";
 import type { Config } from "../config.js";
 import { consumePaymentId, releasePaymentId } from "./db.js";
 import { log } from "../logger.js";
+import { PaymentRequiredError } from "../core/errors.js";
 
 /** Base mainnet USDC (6 decimals). Override via X402_ASSET_ADDRESS if needed. */
 const BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
@@ -48,21 +49,41 @@ export function buildPaymentRequirements(config: Config, toolName: string): Paym
         payTo: config.x402.payTo ?? "0x0000000000000000000000000000000000000000",
         maxTimeoutSeconds: 60,
         asset,
-        extra: { name: config.x402.asset, decimals: 6 },
+        // The EIP-712 domain of the token: standard x402 clients sign
+        // transferWithAuthorization against it, so a wrong or missing name or
+        // version makes every payment fail verification.
+        extra: { name: eip712Name(config.x402.network), version: process.env.X402_EIP712_VERSION ?? "2", decimals: 6 },
       },
     ],
   };
 }
 
+/** USDC's EIP-712 domain name: "USD Coin" on Base mainnet, "USDC" on Base Sepolia. */
+function eip712Name(network: string): string {
+  return process.env.X402_EIP712_NAME ?? (network === "base-sepolia" ? "USDC" : "USD Coin");
+}
+
+/**
+ * A verified, reserved payment that has not been settled yet. Settled only once
+ * the tool has delivered, so a call that fails costs the payer nothing.
+ */
+export interface X402Charge {
+  /** Settle on-chain. Throws PaymentRequiredError when the payment did not settle. */
+  settle(): Promise<void>;
+  /** Free the reservation after a failed call, unless settlement may already have happened. */
+  release(): void;
+}
+
 export interface VerifyResult {
   ok: boolean;
   reason?: string;
-  paymentId?: string;
+  charge?: X402Charge;
 }
 
 /**
  * Verify an X-PAYMENT header. Decodes the base64 payload, asks the facilitator
- * to verify+settle, and records the payment id to block replays.
+ * to verify it, and reserves the payment id to block replays. Settlement is
+ * left to the returned charge.
  */
 export async function verifyPayment(
   config: Config,
@@ -84,12 +105,26 @@ export async function verifyPayment(
     return { ok: false, reason: "no_facilitator_configured" };
   }
 
+  const auth = authorizationOf(payload);
+  // The tool runs between verify and settle; an authorization that expires
+  // first can never settle, so the call would run for nothing.
+  if (auth?.validBefore !== undefined && Number(auth.validBefore) * 1000 < Date.now() + EXPIRY_MARGIN_MS) {
+    return { ok: false, reason: "authorization_expiring" };
+  }
+  // /verify checks each authorization's balance on its own, so one small
+  // wallet could start any number of runs with distinct nonces before one
+  // settles. Bound how many may be in flight per payer.
+  const payer = typeof auth?.from === "string" ? auth.from.toLowerCase() : undefined;
+  if (payer && (pendingByPayer.get(payer) ?? 0) >= MAX_PENDING_PER_PAYER) {
+    return { ok: false, reason: "too_many_pending_payments" };
+  }
+
   const base = config.x402.facilitatorUrl.replace(/\/$/, "");
   const body = JSON.stringify({ x402Version: 1, paymentPayload: payload, paymentRequirements: requirements.accepts[0] });
 
   try {
-    const verifyRes = await postWithTimeout(`${base}/verify`, body);
-    const verifyBody = (await verifyRes.json().catch(() => ({}))) as { isValid?: boolean; invalidReason?: string };
+    const verifyRes = await postWithTimeout(`${base}/verify`, body, VERIFY_TIMEOUT_MS);
+    const verifyBody = (verifyRes.body ?? {}) as { isValid?: boolean; invalidReason?: string };
     if (!verifyRes.ok || !verifyBody.isValid) {
       return { ok: false, reason: verifyBody.invalidReason ?? `verify_failed_${verifyRes.status}` };
     }
@@ -99,53 +134,126 @@ export async function verifyPayment(
     // again and then refused — taking money for a call we do not serve.
     const reservationId = deriveId(payload);
     if (!consumePaymentId(db, reservationId)) return { ok: false, reason: "payment_replayed" };
-
-    let settleBody: { success?: boolean; transaction?: string };
-    try {
-      const settleRes = await postWithTimeout(`${base}/settle`, body);
-      settleBody = (await settleRes.json().catch(() => ({}))) as { success?: boolean; transaction?: string };
-      if (!settleRes.ok || !settleBody.success) {
-        releasePaymentId(db, reservationId);
-        return { ok: false, reason: "settlement_failed" };
-      }
-    } catch (err) {
-      // Settlement outcome is unknown (timeout, network). Keep the reservation:
-      // re-running settle on the same payload could double-charge, which is
-      // worse than making the caller retry with a fresh payment.
-      log.warn("x402 settle error; reservation kept", { err: String(err) });
-      return { ok: false, reason: "settlement_unconfirmed" };
-    }
-
-    return { ok: true, paymentId: settleBody.transaction ?? reservationId };
+    if (payer) pendingByPayer.set(payer, (pendingByPayer.get(payer) ?? 0) + 1);
+    return { ok: true, charge: reservedCharge(db, base, body, reservationId, payer) };
   } catch (err) {
     log.warn("x402 verify error", { err: String(err) });
     return { ok: false, reason: "facilitator_unreachable" };
   }
 }
 
+/** An authorization must outlive the call by this much to be worth running. */
+const EXPIRY_MARGIN_MS = 15_000;
+/** Verified-but-unfinished payments one payer may hold at once. */
+const MAX_PENDING_PER_PAYER = 3;
+const VERIFY_TIMEOUT_MS = 10_000;
+/** Settlement waits for the chain; Base can take longer than a verify. */
+const SETTLE_TIMEOUT_MS = 30_000;
+// shortcut: per-process count; a multi-instance deployment would need it in the shared DB.
+const pendingByPayer = new Map<string, number>();
+
+function reservedCharge(
+  db: Database.Database,
+  base: string,
+  body: string,
+  reservationId: string,
+  payer: string | undefined,
+): X402Charge {
+  let state: "reserved" | "settled" | "unknown" | "released" = "reserved";
+  const finish = (next: typeof state): void => {
+    state = next;
+    if (!payer) return;
+    const left = (pendingByPayer.get(payer) ?? 1) - 1;
+    if (left > 0) pendingByPayer.set(payer, left);
+    else pendingByPayer.delete(payer);
+  };
+  const release = (): void => {
+    if (state !== "reserved") return;
+    releasePaymentId(db, reservationId);
+    finish("released");
+  };
+  const unknownOutcome = (detail: Record<string, unknown>): never => {
+    // The transfer may already be on-chain. Keep the reservation: releasing it
+    // or re-running settle could charge twice.
+    finish("unknown");
+    log.warn("x402 settle outcome unknown; reservation kept", detail);
+    throw new PaymentRequiredError(
+      "Payment settlement could not be confirmed and may still complete. Do not pay again for this call.",
+      { reason: "settlement_unconfirmed" },
+    );
+  };
+  const settle = async (): Promise<void> => {
+    let settleRes: { ok: boolean; status: number; body: unknown };
+    try {
+      settleRes = await postWithTimeout(`${base}/settle`, body, SETTLE_TIMEOUT_MS);
+    } catch (err) {
+      return unknownOutcome({ err: String(err) });
+    }
+    const settleBody = settleRes.body as { success?: boolean; transaction?: string } | undefined;
+    if (settleBody?.success === true) {
+      finish("settled");
+      log.info("x402 payment settled", { transaction: settleBody.transaction });
+      return;
+    }
+    // Only an explicit, parsed refusal with no transaction means nothing moved;
+    // a gateway 5xx/429 or an unreadable body says nothing about the chain.
+    if (settleBody?.success === false && !settleBody.transaction) {
+      release();
+      throw new PaymentRequiredError("Payment did not settle; it was not charged.", { reason: "settlement_failed" });
+    }
+    return unknownOutcome({ status: settleRes.status });
+  };
+  return { settle, release };
+}
+
+function authorizationOf(
+  payload: Record<string, unknown>,
+): { from?: unknown; nonce?: unknown; validBefore?: unknown } | undefined {
+  return (payload.payload as { authorization?: { from?: unknown; nonce?: unknown; validBefore?: unknown } } | undefined)
+    ?.authorization;
+}
+
 /**
- * Stable id for a payment payload.
- *
- * Must hash the WHOLE payload: truncating the JSON to a fixed prefix collides
- * whenever two payments differ only in fields that serialize late (nonce,
- * signature), and a collision here rejects a genuine payment as a replay after
- * the caller has already paid.
+ * Replay key for a payment: the EIP-3009 authorization's (from, nonce), which
+ * the token contract itself treats as single-use. Hashing the serialized JSON
+ * let one payment be re-encoded (key order, extra fields) into many distinct
+ * ids, each passing /verify before the first settle landed.
  */
 function deriveId(payload: Record<string, unknown>): string {
+  const auth = authorizationOf(payload);
+  if (typeof auth?.from === "string" && typeof auth?.nonce === "string") {
+    return `eip3009:${auth.from.toLowerCase()}:${auth.nonce.toLowerCase()}`;
+  }
   return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
 }
 
-/** Facilitator calls must never hang a request: hard 10s timeout per call. */
-async function postWithTimeout(url: string, body: string, timeoutMs = 10_000): Promise<Response> {
+/**
+ * Facilitator calls must never hang a request. The timeout covers the body
+ * too: clearing it once headers arrive let a stalled body hang forever.
+ * `body` is undefined when the response is not JSON.
+ */
+async function postWithTimeout(
+  url: string,
+  body: string,
+  timeoutMs: number,
+): Promise<{ ok: boolean; status: number; body: unknown }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, {
+    const res = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body,
       signal: controller.signal,
     });
+    const text = await res.text();
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = undefined;
+    }
+    return { ok: res.ok, status: res.status, body: parsed };
   } finally {
     clearTimeout(timer);
   }

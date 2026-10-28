@@ -25,6 +25,15 @@ export type Tier = "free" | "premium" | "trading";
  * The slice of BillingService tools may use. Declared structurally so the tool
  * layer does not depend on the billing module (which owns the SQLite handle).
  */
+/**
+ * What authorize() charged for a premium call: refunded when the tool fails,
+ * and (x402) settled only once the tool has delivered.
+ */
+export interface Charge {
+  refund(): void;
+  settle?(): Promise<void>;
+}
+
 export interface BillingLike {
   issueFreeKey(fingerprint: string): { rawKey: string; monthlyPremiumCalls: number; reissued: boolean };
   freeKeyUsage(fingerprint: string): number | null;
@@ -52,9 +61,9 @@ export interface ToolContext {
   billing?: BillingLike;
   /**
    * Premium billing gate. Free/trading tools ignore it; premium tools await it
-   * first. May return a refund that undoes the charge if the tool then fails.
+   * first. Returns what it charged, if anything.
    */
-  authorize: (toolName: string) => Promise<(() => void) | undefined>;
+  authorize: (toolName: string) => Promise<Charge | undefined>;
   /** Present only in stdio mode when trading is enabled. */
   trading?: TradingService;
   /** Background execution runner (stdio trading only). */
@@ -117,8 +126,8 @@ export function registerTool(server: McpServer, def: ToolDef, ctx: ToolContext):
       annotations: { title: def.title, ...def.annotations },
     },
     // The SDK validates args against inputSchema before calling us.
-    async (args: Record<string, unknown>) => {
-      let refund: (() => void) | undefined;
+    async (args: Record<string, unknown>, extra?: { signal?: AbortSignal }) => {
+      let charge: Charge | undefined;
       try {
         if (def.requiresSubject && (!ctx.subject || ctx.subject === "anon")) {
           throw new ToolError(
@@ -127,15 +136,23 @@ export function registerTool(server: McpServer, def: ToolDef, ctx: ToolContext):
               `Pay-per-call x402 has no stable identity, so it cannot own alerts.`,
           );
         }
-        if (def.tier === "premium") refund = await ctx.authorize(def.name);
+        if (def.tier === "premium") charge = await ctx.authorize(def.name);
         const { summary, data } = await def.run(args ?? {}, ctx);
+        // The SDK drops the response of a cancelled or disconnected request, so
+        // charging for it would take money for a result nobody receives.
+        if (extra?.signal?.aborted) {
+          throw new ToolError("cancelled", "The request was cancelled before its result was delivered; not charged.");
+        }
+        // x402 settles only now that the tool has delivered; if settlement
+        // fails, the result is withheld rather than given away.
+        await charge?.settle?.();
         return {
           content: [{ type: "text" as const, text: summary }],
           structuredContent: data as Record<string, unknown>,
         };
       } catch (err) {
-        // A call that delivered nothing must not use up the caller's quota.
-        refund?.();
+        // A call that delivered nothing must not use up the caller's quota or money.
+        charge?.refund();
         return toErrorResult(err, def.name);
       }
     },
