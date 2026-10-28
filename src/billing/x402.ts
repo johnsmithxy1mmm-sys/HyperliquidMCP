@@ -135,7 +135,7 @@ export async function verifyPayment(
     const reservationId = deriveId(payload);
     if (!consumePaymentId(db, reservationId)) return { ok: false, reason: "payment_replayed" };
     if (payer) pendingByPayer.set(payer, (pendingByPayer.get(payer) ?? 0) + 1);
-    return { ok: true, charge: reservedCharge(db, base, body, reservationId, payer) };
+    return { ok: true, charge: reservedCharge(db, base, body, reservationId, payer, requirements) };
   } catch (err) {
     log.warn("x402 verify error", { err: String(err) });
     return { ok: false, reason: "facilitator_unreachable" };
@@ -158,6 +158,7 @@ function reservedCharge(
   body: string,
   reservationId: string,
   payer: string | undefined,
+  requirements: PaymentRequirements,
 ): X402Charge {
   let state: "reserved" | "settled" | "unknown" | "released" = "reserved";
   const finish = (next: typeof state): void => {
@@ -199,7 +200,10 @@ function reservedCharge(
     // a gateway 5xx/429 or an unreadable body says nothing about the chain.
     if (settleBody?.success === false && !settleBody.transaction) {
       release();
-      throw new PaymentRequiredError("Payment did not settle; it was not charged.", { reason: "settlement_failed" });
+      throw new PaymentRequiredError("Payment did not settle; it was not charged. Pay again to retry.", {
+        reason: "settlement_failed",
+        x402: requirements,
+      });
     }
     return unknownOutcome({ status: settleRes.status });
   };

@@ -1588,6 +1588,65 @@ test("hl_cancel_execution stops a running plan", async () => {
   assert.equal((data as { status: string }).status, "cancelled");
 });
 
+test("a live TWAP cut short by a crash comes back interrupted and is not resumed", async () => {
+  const db = new BetterSqlite3(":memory:");
+  let sent = 0;
+  const trading = {
+    placeOrder: async () => {
+      sent++;
+      return { mode: "submitted" };
+    },
+  } as unknown as TradingService;
+  const crashed = new ExecutionRunner(trading, db);
+  const plan = crashed.schedule({
+    kind: "twap", coin: "BTC", isBuy: true, reduceOnly: false, live: true,
+    children: [{ index: 0, size: 0.01, atOffsetMs: 0 }, { index: 1, size: 0.01, atOffsetMs: 200 }],
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20)); // the first slice goes out
+
+  // A process that died leaves its plan "running" in the DB; the next one reads it from there.
+  const restarted = new ExecutionRunner(trading, db);
+  const after = restarted.get(plan.id);
+  crashed.cancel(plan.id); // the dead process's timer dies with it
+  await new Promise((resolve) => setTimeout(resolve, 300)); // past slice 1's time, had it been resumed
+
+  assert.equal(after?.status, "interrupted");
+  assert.deepEqual(after?.children.map((c) => c.status), ["submitted", "pending"]);
+  assert.equal(restarted.pending().length, 0, "a restarted server must not resume sending the rest");
+  assert.equal(sent, 1);
+});
+
+test("a plan cut short by shutdown is stored as interrupted, not as cancelled by the user", () => {
+  const db = new BetterSqlite3(":memory:");
+  const trading = { placeOrder: async () => ({ mode: "submitted" }) } as unknown as TradingService;
+  const runner = new ExecutionRunner(trading, db);
+  const plan = runner.schedule({
+    kind: "twap", coin: "BTC", isBuy: true, reduceOnly: false, live: true,
+    children: [{ index: 0, size: 0.01, atOffsetMs: 60_000 }],
+  });
+
+  runner.cancelAllPending();
+
+  assert.equal(new ExecutionRunner(trading, db).get(plan.id)?.status, "interrupted");
+});
+
+test("a plan another live process is running is left alone, not marked interrupted", () => {
+  const db = new BetterSqlite3(":memory:");
+  const trading = { placeOrder: async () => ({ mode: "submitted" }) } as unknown as TradingService;
+  const first = new ExecutionRunner(trading, db);
+  const plan = first.schedule({
+    kind: "twap", coin: "BTC", isBuy: true, reduceOnly: false, live: true,
+    children: [{ index: 0, size: 0.01, atOffsetMs: 60_000 }],
+  });
+  db.prepare(`UPDATE execution_plans SET owner_pid = ?`).run(process.ppid); // owned by a process that is alive
+
+  const second = new ExecutionRunner(trading, db);
+  first.cancel(plan.id);
+
+  assert.equal(second.get(plan.id), undefined);
+  assert.equal(second.pending().length, 0, "shutting down the second server must not touch the first one's plan");
+});
+
 test("Polymarket 'Up or Down' markets are direction bets, not price thresholds", () => {
   assert.equal(parseThresholdMarket("Solana Up or Down - October 28"), null);
 });
@@ -1876,6 +1935,25 @@ test("x402 keeps the reservation when a gateway error leaves the settle outcome 
   // The transfer may already be on-chain: the same authorization must not be accepted again.
   assert.equal((settleError as ToolError).details?.reason, "settlement_unconfirmed");
   assert.equal(retry.reason, "payment_replayed");
+});
+
+test("a refused settlement tells the client what to pay to retry", async () => {
+  const config = x402Config();
+  const requirements = buildPaymentRequirements(config, "hl_whale_positions");
+  const restore = stubFacilitator({ settles: 0 }, { status: 200, body: JSON.stringify({ success: false, errorReason: "insufficient_funds" }) });
+  let settleError: unknown;
+  try {
+    const { charge } = await verifyPayment(config, getDb(config.dbPath), x402Header("0xnonce-refused"), requirements);
+    await charge?.settle().catch((err: unknown) => {
+      settleError = err;
+    });
+  } finally {
+    restore();
+  }
+
+  // Nothing moved, so the caller may pay again: the 402 must carry what to pay, like the first one did.
+  assert.equal((settleError as ToolError).details?.reason, "settlement_failed");
+  assert.deepEqual((settleError as ToolError).details?.x402, requirements);
 });
 
 test("x402 refuses an authorization that expires before a call could settle", async () => {
