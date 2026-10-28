@@ -2650,3 +2650,35 @@ test("a whale tool's dex argument is read case-insensitively, and 'main' means t
   assert.deepEqual((xyz.data as { coins: Array<{ coin: string }> }).coins.map((c) => c.coin), ["xyz:XYZ100"]);
   assert.deepEqual((main.data as { coins: Array<{ coin: string }> }).coins.map((c) => c.coin), ["BTC"]);
 });
+
+test("an unknown dex name is a clear error listing the known dexes, not an empty or internal-error result", async () => {
+  const { getAccount } = await import("../src/tools/free/getAccount.js");
+  const { getOpenOrders } = await import("../src/tools/free/getOpenOrders.js");
+  // The live API answers an unknown dex with null.
+  const hl = hip3Hl({ perpDexs: async () => [null, { name: "xyz" }], clearinghouseState: async () => null, openOrders: async () => null });
+  const ctx = { hl, snapshots: new InMemorySnapshotStore(), store: { cohort: { get: () => null } } } as unknown as ToolContext;
+  const unknownDex = (err: unknown) => err instanceof ToolError && err.code === "unknown_dex" && err.message.includes("xyz");
+
+  await assert.rejects(getAccount.run({ address: WHALE, dex: "xzy" }, ctx), unknownDex);
+  await assert.rejects(getOpenOrders.run({ address: WHALE, dex: "xzy" }, ctx), unknownDex);
+  await assert.rejects(whalePositions.run({ dex: "xzy", cohort: [WHALE] }, ctx), unknownDex);
+});
+
+test("a whale alert on a delisted HIP-3 dex does not stop the same cohort's main-dex alerts", async () => {
+  const alert = (id: string, coin: string): AlertRecord => ({
+    id, subject: "s", type: "whale_net_flip", params: { coin, cohort: [WHALE] },
+    enabled: true, cooldownMinutes: 5, lastFiredAt: null, lastState: { sign: -1 }, createdAt: 0,
+  });
+  const store = {
+    alerts: { listActive: () => [alert("gone", "gone:OLD"), alert("btc", "BTC")], updateState: () => undefined, recordFired: () => undefined },
+    signals: { dueForScoring: () => [], record: () => undefined },
+    snapshots: { record: () => undefined },
+    scores: { due: () => [] },
+  } as unknown as Warehouse;
+  const ctx = hip3WhaleCtx(); // "gone" is not among the live dexes; the cohort is now net long BTC
+  const signer = { sign: () => ({ signature: "sig" }) } as unknown as SignalSigner;
+
+  const fired = await new AlertEngine(ctx.hl, store, signer, { ...ctx, store } as unknown as ToolContext).tick(1_000_000);
+
+  assert.equal(fired, 1);
+});

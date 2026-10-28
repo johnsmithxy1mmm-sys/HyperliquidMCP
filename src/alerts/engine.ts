@@ -189,7 +189,12 @@ export class AlertEngine {
       try {
         const resolved = await resolveCohort(this.ctxForCohort, cohort, 100);
         for (const dex of dexes) {
-          const accounts = await fetchCohortAccounts(this.ctxForCohort, resolved.addresses, dex);
+          // A delisted dex must not stop the same cohort's alerts on other dexes.
+          const accounts = await fetchCohortAccounts(this.ctxForCohort, resolved.addresses, dex).catch((err: unknown) => {
+            log.warn("whale alert dex failed", { dex, err: String(err) });
+            return undefined;
+          });
+          if (!accounts) continue;
           // A wallet that failed to load would read as an exit and could flip the
           // cohort's sign into a signed signal; skip this dex this tick instead.
           if (accounts.length < resolved.addresses.length) {

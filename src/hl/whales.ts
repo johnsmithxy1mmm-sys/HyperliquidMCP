@@ -4,7 +4,7 @@
  * hl_whale_flow_alerts, and hl_liquidation_map.
  */
 import type { ToolContext } from "../tools/registry.js";
-import { normalizeAccount, accountStateFor, type NormalizedAccount, type NormalizedPosition } from "./account.js";
+import { normalizeAccount, accountStateFor, assertKnownDex, type NormalizedAccount, type NormalizedPosition } from "./account.js";
 import { round } from "../core/format.js";
 import { log } from "../logger.js";
 
@@ -41,6 +41,8 @@ export async function fetchCohortAccounts(
   dex?: string,
   concurrency = 5,
 ): Promise<CohortAccount[]> {
+  // Checked once up front: per wallet the error would be skipped as a failed load.
+  if (dex && dex !== "all") await assertKnownDex(ctx.hl, dex);
   const out: CohortAccount[] = [];
   let i = 0;
   async function worker(): Promise<void> {
