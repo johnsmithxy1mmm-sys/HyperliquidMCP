@@ -173,12 +173,31 @@ export class ScoreStore {
   outcomes(limit = 5000): ScoredOutcome[] {
     const rows = this.db
       .prepare(
-        `SELECT score, forward_pnl, account_value FROM score_snapshots
+        `SELECT address, ts, horizon_days, score, forward_pnl, account_value FROM score_snapshots
          WHERE resolved_at IS NOT NULL AND forward_pnl IS NOT NULL AND account_value > 0
-         ORDER BY ts DESC LIMIT ?`,
+         ORDER BY address, ts ASC`,
       )
-      .all(limit) as Array<{ score: number; forward_pnl: number; account_value: number }>;
-    return rows.map((r) => ({ score: r.score, forwardReturn: r.forward_pnl / r.account_value }));
+      .all() as Array<{ address: string; ts: number; horizon_days: number; score: number; forward_pnl: number; account_value: number }>;
+    // The sampler scores the same wallets daily over a 30-day forward window,
+    // so consecutive rows of one wallet share almost all of their outcome and
+    // would inflate n (and shrink the p-value) without adding evidence. Keep,
+    // per wallet, only rows whose forward windows do not overlap.
+    const kept: typeof rows = [];
+    let lastAddress = "";
+    let windowEnd = -Infinity;
+    for (const r of rows) {
+      if (r.address !== lastAddress) {
+        lastAddress = r.address;
+        windowEnd = -Infinity;
+      }
+      if (r.ts < windowEnd) continue;
+      kept.push(r);
+      windowEnd = r.ts + r.horizon_days * 86_400_000;
+    }
+    return kept
+      .sort((a, b) => b.ts - a.ts)
+      .slice(0, limit)
+      .map((r) => ({ score: r.score, forwardReturn: r.forward_pnl / r.account_value }));
   }
 
   counts(): { total: number; resolved: number; pending: number } {

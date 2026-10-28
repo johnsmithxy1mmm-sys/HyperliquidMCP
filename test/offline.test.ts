@@ -2418,3 +2418,21 @@ test("hl_link_telegram returns a one-time t.me link, or says Telegram is not con
     (err: unknown) => err instanceof ToolError && err.code === "telegram_not_configured",
   );
 });
+
+test("calibration keeps one observation per wallet per non-overlapping forward window", () => {
+  const store = new ScoreStore(new BetterSqlite3(":memory:"));
+  const day = 86_400_000;
+  // The daily sampler scores the same wallets every day with a 30-day forward
+  // window: consecutive rows share 29 of 30 days and are not independent.
+  for (const address of ["0xa", "0xb"]) {
+    for (let d = 0; d < 40; d++) {
+      store.record({ address, score: d, accountValue: 1_000, horizonDays: 30, ts: d * day });
+    }
+  }
+  for (const row of store.due(1_000, 400 * day)) store.setOutcome(row.id, 10);
+
+  const outcomes = store.outcomes();
+
+  // Day 0 and day 30 for each wallet; day 1..29 overlap day 0's window.
+  assert.equal(outcomes.length, 4);
+});
