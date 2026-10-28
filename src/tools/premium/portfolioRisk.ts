@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { ToolDef } from "../registry.js";
 import { assertAddress, num, round, sharpe } from "../../core/format.js";
-import { normalizeAccount } from "../../hl/account.js";
+import { normalizeAccount, accountStateFor } from "../../hl/account.js";
 import { ANALYTICS_DISCLAIMER } from "../../hl/whales.js";
 
 /**
@@ -20,6 +20,7 @@ export const portfolioRisk: ToolDef = {
     ANALYTICS_DISCLAIMER,
   inputSchema: {
     address: z.string().describe("EVM 0x address."),
+    dex: z.string().optional().describe("Perp dex: omit for the main dex, a HIP-3 builder dex name (e.g. 'xyz'), or 'all' for every dex."),
     shocks: z
       .array(z.number())
       .default([-0.05, -0.1, -0.2])
@@ -42,7 +43,7 @@ export const portfolioRisk: ToolDef = {
     const address = assertAddress(String(args.address));
     const shocks = (args.shocks as number[] | undefined)?.length ? (args.shocks as number[]) : [-0.05, -0.1, -0.2];
 
-    const state = await ctx.hl.clearinghouseState(address);
+    const state = await accountStateFor(ctx.hl, address, args.dex as string | undefined);
     const acct = normalizeAccount(state);
     const equity = acct.accountValue;
     const totalNtl = acct.positions.reduce((a, p) => a + Math.abs(p.positionValueUsd), 0);

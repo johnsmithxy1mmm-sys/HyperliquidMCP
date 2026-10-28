@@ -11,6 +11,7 @@ export const getOpenOrders: ToolDef = {
     "Read-only; paginated. Use to inspect any wallet's live order book footprint.",
   inputSchema: {
     address: z.string().describe("EVM 0x address."),
+    dex: z.string().optional().describe("Perp dex: omit for the main dex, a HIP-3 builder dex name (e.g. 'xyz'), or 'all' for every dex."),
     coin: z.string().optional().describe("Optional filter to a single coin."),
     offset: z.number().int().min(0).default(0),
     limit: z.number().int().min(1).max(200).default(100),
@@ -25,7 +26,9 @@ export const getOpenOrders: ToolDef = {
   run: async (args, ctx) => {
     const address = assertAddress(String(args.address));
     const coinFilter = (args.coin as string | undefined)?.toUpperCase();
-    const raw = await ctx.hl.openOrders(address);
+    const dex = args.dex as string | undefined;
+    const dexs = dex === "all" ? [undefined, ...(await ctx.hl.perpDexs()).flatMap((d) => (d?.name ? [d.name] : []))] : [dex || undefined];
+    const raw = (await Promise.all(dexs.map((d) => ctx.hl.openOrders(address, d)))).flat();
 
     let orders = raw.map((o) => ({
       coin: o.coin,

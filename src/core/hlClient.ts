@@ -140,15 +140,16 @@ export class HyperliquidClient {
 
   // ---- Account state ---------------------------------------------------------
 
-  clearinghouseState(user: string): Promise<ClearinghouseState> {
-    return this.cache.getOrLoad(`chs:${user.toLowerCase()}`, TTL.account, () =>
-      this.info<ClearinghouseState>({ type: "clearinghouseState", user }, WEIGHT_LIGHT),
+  /** Perp account on the main dex, or on one HIP-3 builder dex. */
+  clearinghouseState(user: string, dex?: string): Promise<ClearinghouseState> {
+    return this.cache.getOrLoad(`chs:${user.toLowerCase()}:${dex ?? ""}`, TTL.account, () =>
+      this.info<ClearinghouseState>({ type: "clearinghouseState", user, ...(dex ? { dex } : {}) }, WEIGHT_LIGHT),
     );
   }
 
-  openOrders(user: string): Promise<OpenOrder[]> {
-    return this.cache.getOrLoad(`oo:${user.toLowerCase()}`, TTL.account, () =>
-      this.info<OpenOrder[]>({ type: "frontendOpenOrders", user }),
+  openOrders(user: string, dex?: string): Promise<OpenOrder[]> {
+    return this.cache.getOrLoad(`oo:${user.toLowerCase()}:${dex ?? ""}`, TTL.account, () =>
+      this.info<OpenOrder[]>({ type: "frontendOpenOrders", user, ...(dex ? { dex } : {}) }),
     );
   }
 

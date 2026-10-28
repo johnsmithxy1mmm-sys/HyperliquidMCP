@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { ToolDef } from "../registry.js";
 import { assertAddress, round } from "../../core/format.js";
-import { normalizeAccount } from "../../hl/account.js";
+import { normalizeAccount, accountStateFor } from "../../hl/account.js";
 
 export const getAccount: ToolDef = {
   name: "hl_get_account",
@@ -12,6 +12,7 @@ export const getAccount: ToolDef = {
     "(size, entry, uPnL, leverage, liquidation price). Read-only; works for any public 0x address.",
   inputSchema: {
     address: z.string().describe("EVM 0x address (42 hex chars)."),
+    dex: z.string().optional().describe("Perp dex: omit for the main dex, a HIP-3 builder dex name (e.g. 'xyz'), or 'all' for every dex."),
   },
   outputSchema: {
     address: z.string(),
@@ -25,7 +26,7 @@ export const getAccount: ToolDef = {
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   run: async (args, ctx) => {
     const address = assertAddress(String(args.address));
-    const state = await ctx.hl.clearinghouseState(address);
+    const state = await accountStateFor(ctx.hl, address, args.dex as string | undefined);
     const acct = normalizeAccount(state);
     const marginUtilization = acct.accountValue > 0 ? round(acct.totalMarginUsed / acct.accountValue, 4) : 0;
 
