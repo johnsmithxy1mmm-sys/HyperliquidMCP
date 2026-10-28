@@ -326,9 +326,9 @@ test("cosineSimilarity + detectCoordination cluster co-moving wallets", () => {
   const mk = (address: string, e: [string, number][]): WalletVector => ({ address, vec: new Map(e) });
   // A and B mirror each other; C is opposite; D unrelated
   const wallets = [
-    mk("A", [["BTC", 0.7], ["ETH", 0.3]]),
-    mk("B", [["BTC", 0.72], ["ETH", 0.28]]),
-    mk("C", [["BTC", -0.7], ["ETH", -0.3]]),
+    mk("A", [["BTC", 0.6], ["ETH", 0.3], ["SOL", 0.1]]),
+    mk("B", [["BTC", 0.62], ["ETH", 0.28], ["SOL", 0.1]]),
+    mk("C", [["BTC", -0.6], ["ETH", -0.3], ["SOL", -0.1]]),
     mk("D", [["SOL", 1]]),
   ];
   assert.ok(cosineSimilarity(wallets[0].vec, wallets[1].vec) > 0.99);
@@ -1703,4 +1703,29 @@ test("hl_vault_screener caps how many vaults one call may fan out to", () => {
   const vaults = Array.from({ length: 51 }, (_, i) => `0x${String(i).padStart(40, "0")}`);
 
   assert.equal(vaultScreener.inputSchema.vaults?.safeParse(vaults).success, false);
+});
+
+test("detectCoordination does not call single-coin books the same entity", () => {
+  // Twenty unrelated whales that are simply long BTC all have cosine 1.0.
+  const wallets: WalletVector[] = Array.from({ length: 20 }, (_, i) => ({
+    address: `W${i}`,
+    vec: new Map([["BTC", 1 + i]]),
+  }));
+
+  const { clusters, pairs } = detectCoordination(wallets, 0.9);
+
+  assert.equal(clusters.length, 0);
+  assert.equal(pairs.length, 0);
+});
+
+test("detectCoordination returns at most 50 pairs, strongest first", () => {
+  const wallets: WalletVector[] = Array.from({ length: 60 }, (_, i) => ({
+    address: `M${i}`,
+    vec: new Map([["BTC", 0.5], ["ETH", 0.3 + i / 1000], ["SOL", 0.2]]),
+  }));
+
+  const { pairs } = detectCoordination(wallets, 0.9);
+
+  assert.equal(pairs.length, 50);
+  assert.ok(pairs.every((p, i) => i === 0 || pairs[i - 1].similarity >= p.similarity));
 });

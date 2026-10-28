@@ -4,7 +4,7 @@ import { resolveCohort } from "../../hl/cohort.js";
 import { fetchCohortAccounts, ANALYTICS_DISCLAIMER } from "../../hl/whales.js";
 import { analyzeCohort } from "../../smartmoney/analyze.js";
 import { scoreTrader } from "../../smartmoney/score.js";
-import { detectCoordination, type WalletVector } from "../../smartmoney/coordination.js";
+import { detectCoordination, MIN_COINS_FOR_SIMILARITY, type WalletVector } from "../../smartmoney/coordination.js";
 import { calibrate } from "../../smartmoney/calibration.js";
 import { round, paginate } from "../../core/format.js";
 import { SCORE_HORIZON_DAYS } from "../../store/scoreStore.js";
@@ -118,6 +118,7 @@ export const coordinationScan: ToolDef = {
   outputSchema: {
     source: z.string(),
     walletsQueried: z.number(),
+    walletsCompared: z.number(),
     clusters: z.array(z.array(z.string())),
     pairs: z.array(z.record(z.any())),
     disclaimer: z.string(),
@@ -143,14 +144,15 @@ export const coordinationScan: ToolDef = {
       })
       .filter((w) => w.vec.size > 0);
 
-    const { pairs, clusters } = detectCoordination(wallets, threshold);
+    const { pairs, clusters, compared } = detectCoordination(wallets, threshold);
     return {
       summary:
-        `${clusters.length} coordinated cluster(s) among ${wallets.length} active wallets ` +
+        `${clusters.length} coordinated cluster(s) among ${compared} wallets holding ${MIN_COINS_FOR_SIMILARITY}+ coins ` +
         `(≥${round(threshold * 100, 0)}% similarity); ${pairs.length} linked pair(s).`,
       data: {
         source: cohort.source,
         walletsQueried: accounts.length,
+        walletsCompared: compared,
         clusters,
         pairs,
         disclaimer: ANALYTICS_DISCLAIMER,
