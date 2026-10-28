@@ -2072,3 +2072,40 @@ test("a retried Hyperliquid request is charged again for each attempt", async ()
   // Hyperliquid counts every HTTP request, retries included.
   assert.deepEqual(charged, [20, 20]);
 });
+
+async function waitFor(condition: () => boolean, timeoutMs = 2000): Promise<void> {
+  const until = Date.now() + timeoutMs;
+  while (!condition() && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 20));
+}
+
+test("a WebSocket that stays connected but silent is dropped so it can reconnect", async () => {
+  const { WebSocketServer } = await import("ws");
+  const { MidsFeed } = await import("../src/core/ws.js");
+  const wss = new WebSocketServer({ port: 0 });
+  let connections = 0;
+  let closedByClient = 0;
+  wss.on("connection", (socket) => {
+    connections++;
+    socket.on("close", () => closedByClient++);
+  });
+  const { port } = wss.address() as AddressInfo;
+  const hl = { metaAndAssetCtxs: async () => [{ universe: [] }, []] } as unknown as HyperliquidClient;
+  const feed = new MidsFeed({ wsEnabled: true, wsUrl: `ws://127.0.0.1:${port}` } as unknown as Config, hl);
+  const realNow = Date.now;
+  try {
+    feed.ensureConnected();
+    await waitFor(() => connections === 1);
+    await new Promise((resolve) => setTimeout(resolve, 50)); // let the client see "open"
+    // A minute of silence: a half-open socket never fires "close" by itself.
+    Date.now = () => realNow() + 61_000;
+    await feed.getMid("BTC");
+    Date.now = realNow;
+    await waitFor(() => closedByClient === 1);
+  } finally {
+    Date.now = realNow;
+    feed.close();
+    wss.close();
+  }
+
+  assert.equal(closedByClient, 1);
+});
