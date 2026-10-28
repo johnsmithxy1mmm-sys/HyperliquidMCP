@@ -101,7 +101,7 @@ export class TradingService {
     return nonce;
   }
 
-  private canSubmit(): { ok: boolean; reason?: string } {
+  canSubmit(): { ok: boolean; reason?: string } {
     if (!this.config.tradingEnabled) return { ok: false, reason: "trading_disabled (set HL_ENABLE_TRADING=true)" };
     if (!this.config.agentPrivateKey) return { ok: false, reason: "no_agent_key (set HL_AGENT_PRIVATE_KEY)" };
     return { ok: true };
@@ -151,6 +151,19 @@ export class TradingService {
         `Price ${px} formats to ${order.p} under ${market.coin} tick rules (szDecimals=${market.szDecimals}); ` +
           `pick a price representable at this precision.`,
         { requested: px, formatted: order.p, szDecimals: market.szDecimals },
+      );
+    }
+
+    // Operator cap, checked in preview too: confirm/dryRun come from the model,
+    // so a prompt-injected agent must not be able to size an order freely.
+    // Reduce-only is exempt so a position can always be closed.
+    const notionalUsd = Number(order.s) * Number(order.p);
+    if (!params.reduceOnly && notionalUsd > this.config.maxOrderNotionalUsd) {
+      throw new ToolError(
+        "order_too_large",
+        `Order notional $${Math.round(notionalUsd)} exceeds the $${this.config.maxOrderNotionalUsd} per-order cap ` +
+          `(HL_MAX_ORDER_NOTIONAL_USD). Reduce the size or split it with hl_twap_order.`,
+        { notionalUsd, capUsd: this.config.maxOrderNotionalUsd },
       );
     }
 
