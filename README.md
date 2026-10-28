@@ -55,6 +55,8 @@ that attaches a builder code to orders.
 
 Every emitted signal is **cryptographically signed** and scored against forward price — a track record that can't be cherry-picked. Persistence (alerts, positioning snapshots, signals) is SQLite-backed and survives restarts.
 
+**Public proof, no key needed:** the hosted server runs its own standing alerts (funding extremes on the top 10 perps by open interest, whale-cohort flips on BTC/ETH) and publishes their track record together with the score calibration and the signing key at [`/track-record`](https://hypersmash.fly.dev/track-record) ([JSON](https://hypersmash.fly.dev/track-record.json)). The same data is available to MCP clients as resources (`hypersignal://about`, `://track-record`, `://calibration`, `://signal-pubkey`), plus three prompts: `whale_briefing`, `wallet_risk_check`, `funding_carry_scan`.
+
 ### Trading (optional, **local stdio only**, builder code, maximum warnings)
 | Tool | What it does |
 |---|---|
