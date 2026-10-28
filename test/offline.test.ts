@@ -2759,3 +2759,47 @@ test("a HIP-3 order refused for margin says how to fund that dex", async () => {
     globalThis.fetch = realFetch;
   }
 });
+
+/** hip3Hl plus a second dex "abc" (perpDexs index 2) whose ABC2 sits at index 1 in its meta. */
+function twoDexHl(extra: Record<string, unknown> = {}) {
+  const row = { markPx: "10", midPx: "10", prevDayPx: "10", funding: "0", oraclePx: "10", openInterest: "1", dayNtlVlm: "0" };
+  return {
+    perpDexs: async () => [null, { name: "xyz" }, { name: "abc" }],
+    metaAndAssetCtxsForDex: async (dex: string) =>
+      dex === "abc"
+        ? [{ universe: [{ name: "abc:ABC1", szDecimals: 2, maxLeverage: 5 }, { name: "abc:ABC2", szDecimals: 2, maxLeverage: 5 }] }, [row, row]]
+        : [{ universe: [{ name: "xyz:XYZ100", szDecimals: 4, maxLeverage: 20 }] }, [{ ...row, markPx: "29800", midPx: "29800" }]],
+    ...extra,
+  };
+}
+
+const ABC2_BUY = { coin: "abc:ABC2", isBuy: true, sz: 1, reduceOnly: false, tif: "Ioc" } as const;
+
+test("the HIP-3 asset id uses both the dex's place in perpDexs and the coin's place in that dex", async () => {
+  const sent: Array<{ action: { orders: Array<{ a: number }> } }> = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (_url: unknown, init?: { body?: unknown }) => {
+    sent.push(JSON.parse(String(init?.body)));
+    return new Response(JSON.stringify({ status: "ok", response: { type: "order", data: { statuses: [{ filled: { oid: 1 } }] } } }));
+  }) as typeof fetch;
+  let preview: Awaited<ReturnType<TradingService["placeOrder"]>>;
+  try {
+    preview = await hip3Trading({ hl: twoDexHl() }).placeOrder(ABC2_BUY, { confirm: false, dryRun: true });
+    await hip3Trading({ hip3TradingEnabled: true, hl: twoDexHl() }).placeOrder(ABC2_BUY, { confirm: true, dryRun: false });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  // 100000 + perp_dex_index (abc = 2) * 10000 + index_in_meta (1)
+  assert.equal(preview.hip3?.assetId, 120_001);
+  assert.equal(sent[0].action.orders[0].a, 120_001, "the signed and submitted order carries the same id");
+});
+
+test("cancelling a HIP-3 order uses its asset id and is gated like an order", async () => {
+  const preview = await hip3Trading({ hl: twoDexHl() }).cancelOrder("abc:ABC2", 42, { confirm: false, dryRun: true });
+  const live = await hip3Trading({ hl: twoDexHl() }).cancelOrder("abc:ABC2", 42, { confirm: true, dryRun: false });
+
+  assert.deepEqual((preview.action as { cancels: unknown[] }).cancels, [{ a: 120_001, o: 42 }]);
+  assert.equal(live.mode, "blocked");
+  assert.match(String(live.reason), /HL_ENABLE_HIP3_TRADING/);
+});

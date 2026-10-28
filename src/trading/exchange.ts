@@ -131,7 +131,7 @@ export class TradingService {
     return { market, asset: 100_000 + dexIndex * 10_000 + market.index, dex };
   }
 
-  canSubmit(hip3 = false): { ok: boolean; reason?: string } {
+  canSubmit(hip3: boolean): { ok: boolean; reason?: string } {
     if (!this.config.tradingEnabled) return { ok: false, reason: "trading_disabled (set HL_ENABLE_TRADING=true)" };
     if (!this.config.agentPrivateKey) return { ok: false, reason: "no_agent_key (set HL_AGENT_PRIVATE_KEY)" };
     if (hip3 && !this.config.hip3TradingEnabled) {
