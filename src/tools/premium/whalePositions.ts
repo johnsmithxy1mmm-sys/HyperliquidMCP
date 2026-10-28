@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { ToolDef } from "../registry.js";
 import { resolveCohort } from "../../hl/cohort.js";
-import { fetchCohortAccounts, aggregateByCoin, cohortSizeFor, ANALYTICS_DISCLAIMER } from "../../hl/whales.js";
+import { fetchCohortAccounts, aggregateByCoin, cohortSizeFor, dexArg, ANALYTICS_DISCLAIMER } from "../../hl/whales.js";
 import { dexOf } from "../../hl/markets.js";
 import { round, shortHash } from "../../core/format.js";
 
@@ -38,7 +38,7 @@ export const whalePositions: ToolDef = {
     const coinArg = args.coin as string | undefined;
     const coinFilter = coinArg?.toUpperCase();
     // A coin names its own dex: "xyz:XYZ100" lives on xyz, "BTC" on the main dex.
-    const dex = coinArg ? dexOf(coinArg) : (args.dex as string | undefined);
+    const dex = coinArg ? dexOf(coinArg) : dexArg(args.dex);
     const size = cohortSizeFor(dex, (args.topN as number) ?? 50);
     const cohort = await resolveCohort(ctx, args.cohort as string[] | undefined, size.topN);
     const accounts = await fetchCohortAccounts(ctx, cohort.addresses, dex);

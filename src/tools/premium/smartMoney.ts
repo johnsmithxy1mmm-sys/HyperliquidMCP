@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { ToolDef } from "../registry.js";
 import { resolveCohort } from "../../hl/cohort.js";
-import { fetchCohortAccounts, cohortSizeFor, ANALYTICS_DISCLAIMER } from "../../hl/whales.js";
+import { fetchCohortAccounts, cohortSizeFor, dexArg, ANALYTICS_DISCLAIMER } from "../../hl/whales.js";
 import { analyzeCohort } from "../../smartmoney/analyze.js";
 import { scoreTrader } from "../../smartmoney/score.js";
 import { detectCoordination, MIN_COINS_FOR_SIMILARITY, type WalletVector } from "../../smartmoney/coordination.js";
@@ -131,7 +131,7 @@ export const coordinationScan: ToolDef = {
   },
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   run: async (args, ctx) => {
-    const dex = args.dex as string | undefined;
+    const dex = dexArg(args.dex);
     const size = cohortSizeFor(dex, (args.topN as number) ?? 80);
     const threshold = (args.threshold as number) ?? 0.9;
     const cohort = await resolveCohort(ctx, args.cohort as string[] | undefined, size.topN);

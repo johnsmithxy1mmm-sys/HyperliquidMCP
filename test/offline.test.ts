@@ -2642,3 +2642,11 @@ test("whale_net_flip on a HIP-3 coin fires from that dex's cohort positions", as
 
   assert.equal(fired, 1);
 });
+
+test("a whale tool's dex argument is read case-insensitively, and 'main' means the main dex", async () => {
+  const xyz = await whalePositions.run({ dex: " XYZ ", cohort: [WHALE] }, hip3WhaleCtx());
+  const main = await whalePositions.run({ dex: "main", cohort: [WHALE] }, hip3WhaleCtx());
+
+  assert.deepEqual((xyz.data as { coins: Array<{ coin: string }> }).coins.map((c) => c.coin), ["xyz:XYZ100"]);
+  assert.deepEqual((main.data as { coins: Array<{ coin: string }> }).coins.map((c) => c.coin), ["BTC"]);
+});
