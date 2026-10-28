@@ -14,28 +14,34 @@ export interface TwapParams {
   totalSize: number;
   slices: number;
   durationMs: number;
+  /** The coin's size decimals: slices are whole multiples of 10^-szDecimals. */
+  szDecimals: number;
 }
 
 /**
- * TWAP: split totalSize into `slices` evenly-sized children spread evenly over
- * durationMs. Rounding drift is folded into the final slice so children sum
- * exactly to totalSize.
+ * TWAP: split totalSize into `slices` children spread evenly over durationMs.
+ *
+ * Sizes are whole lots (10^-szDecimals). The exchange rounds every order to
+ * szDecimals, so a 1.5-coin slice of a 0-decimal coin would go out as 2 and
+ * ten of them would send 20. Lots are spread so slices differ by at most one
+ * lot and sum exactly to totalSize rounded to the lot.
  */
 export function planTwap(p: TwapParams): ChildOrder[] {
   const slices = Math.max(1, Math.floor(p.slices));
-  if (!(p.totalSize > 0)) return [];
-  const per = p.totalSize / slices;
+  const perLot = 10 ** p.szDecimals;
+  const lots = Math.round(p.totalSize * perLot);
+  if (!(lots > 0)) return [];
+  const base = Math.floor(lots / slices);
+  const extra = lots % slices;
   const gap = slices > 1 ? p.durationMs / (slices - 1) : 0;
   const out: ChildOrder[] = [];
-  let allocated = 0;
   for (let i = 0; i < slices; i++) {
-    const isLast = i === slices - 1;
-    const size = isLast ? round(p.totalSize - allocated, 10) : round(per, 10);
-    allocated = round(allocated + size, 10);
+    const size = (base + (i < extra ? 1 : 0)) / perLot;
     out.push({ index: i, size, atOffsetMs: Math.round(gap * i) });
   }
-  // Accumulated rounding can leave the folded last slice ≤ 0 — drop empty
-  // children and reindex so indices stay contiguous for the runner.
+  // With fewer lots than slices some children are empty — drop them and
+  // reindex so indices stay contiguous for the runner. Callers compare the
+  // count with what they asked for.
   return out.filter((c) => c.size > 0).map((c, i) => ({ ...c, index: i }));
 }
 

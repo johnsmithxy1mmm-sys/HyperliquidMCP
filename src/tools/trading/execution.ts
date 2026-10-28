@@ -50,12 +50,22 @@ export const twapOrder: ToolDef = {
   run: async (args, ctx) => {
     const { execution } = requireExecution(ctx);
     const market = await resolveMarket(ctx.hl, String(args.coin));
+    const slices = args.slices as number;
     const children = planTwap({
       totalSize: args.totalSize as number,
-      slices: args.slices as number,
+      slices,
       durationMs: (args.durationMinutes as number) * 60_000,
+      szDecimals: market.szDecimals,
     });
     if (children.length === 0) throw new ToolError("bad_plan", "TWAP produced no child orders; check totalSize/slices.");
+    if (children.length < slices) {
+      throw new ToolError(
+        "bad_plan",
+        `${args.totalSize} ${market.coin} is only ${children.length} lots at ${market.szDecimals} size decimals; ` +
+          `use at most ${children.length} slices.`,
+        { lots: children.length, szDecimals: market.szDecimals },
+      );
+    }
 
     const isBuy = args.side === "buy";
     const live = args.confirm === true && args.dryRun !== true;

@@ -58,6 +58,7 @@ import { requestFreeKey } from "../src/tools/free/requestFreeKey.js";
 import { whaleFlowAlerts } from "../src/tools/premium/whaleFlowAlerts.js";
 import { whalePositions } from "../src/tools/premium/whalePositions.js";
 import { smartMoneyScore } from "../src/tools/premium/smartMoney.js";
+import { twapOrder } from "../src/tools/trading/execution.js";
 
 test("formatSize rounds to szDecimals", () => {
   assert.equal(formatSize(1.23456789, 3), "1.235");
@@ -178,13 +179,13 @@ test("snapshot store caps total keys (memory bound)", () => {
 });
 
 test("planTwap splits evenly and sums exactly to totalSize", () => {
-  const c = planTwap({ totalSize: 10, slices: 4, durationMs: 3 * 60_000 });
+  const c = planTwap({ totalSize: 10, slices: 4, durationMs: 3 * 60_000, szDecimals: 5 });
   assert.equal(c.length, 4);
   assert.equal(round(c.reduce((a, x) => a + x.size, 0), 6), 10);
   assert.equal(c[0].atOffsetMs, 0);
   assert.equal(c[3].atOffsetMs, 180_000); // last at full duration
   // rounding drift folded into last slice
-  const d = planTwap({ totalSize: 1, slices: 3, durationMs: 0 });
+  const d = planTwap({ totalSize: 1, slices: 3, durationMs: 0, szDecimals: 5 });
   assert.equal(round(d.reduce((a, x) => a + x.size, 0), 10), 1);
 });
 
@@ -463,7 +464,7 @@ test("probTouchBelow: certain when already below, >= at-expiry prob otherwise", 
 });
 
 test("planTwap never emits non-positive slices, indices contiguous", () => {
-  const c = planTwap({ totalSize: 0.1, slices: 3, durationMs: 60000 });
+  const c = planTwap({ totalSize: 0.1, slices: 3, durationMs: 60000, szDecimals: 5 });
   assert.ok(c.every((x) => x.size > 0));
   assert.deepEqual(c.map((x) => x.index), c.map((_, i) => i));
   assert.ok(Math.abs(c.reduce((a, x) => a + x.size, 0) - 0.1) < 1e-9);
@@ -1461,4 +1462,29 @@ test("an insignificant small positive correlation is no evidence, not weak_posit
   // r ≈ 0.13 with p ≈ 0.41: indistinguishable from noise.
   assert.ok((report.pValue ?? 0) > 0.05);
   assert.equal(report.verdict, "no_evidence");
+});
+
+test("planTwap slices in whole lots so the exchange sends exactly totalSize", () => {
+  // szDecimals 0: 1.5-coin slices would each be rounded to 2 on the wire (20 sent).
+  const children = planTwap({ totalSize: 15, slices: 10, durationMs: 0, szDecimals: 0 });
+
+  assert.deepEqual(children.map((c) => c.size), [2, 2, 2, 2, 2, 1, 1, 1, 1, 1]);
+});
+
+/** Trading-mode ctx with one perp market (BTC) of the given size decimals. */
+function tradingCtx(szDecimals: number, execution: unknown = {}) {
+  const hl = {
+    metaAndAssetCtxs: async () => [
+      { universe: [{ name: "BTC", szDecimals, maxLeverage: 40 }] },
+      [{ markPx: "60000", midPx: "60000", prevDayPx: "60000", funding: "0", oraclePx: "60000", openInterest: "0", dayNtlVlm: "0" }],
+    ],
+  };
+  return { hl, mode: "stdio", trading: {}, execution } as unknown as ToolContext;
+}
+
+test("hl_twap_order refuses more slices than the size has lots", async () => {
+  await assert.rejects(
+    twapOrder.run({ coin: "BTC", side: "buy", totalSize: 3, slices: 5, durationMinutes: 1 }, tradingCtx(0)),
+    (err: unknown) => err instanceof ToolError && err.code === "bad_plan" && /at most 3 slices/.test(err.message),
+  );
 });
