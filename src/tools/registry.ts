@@ -126,7 +126,7 @@ export function registerTool(server: McpServer, def: ToolDef, ctx: ToolContext):
       annotations: { title: def.title, ...def.annotations },
     },
     // The SDK validates args against inputSchema before calling us.
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: { signal?: AbortSignal }) => {
       let charge: Charge | undefined;
       try {
         if (def.requiresSubject && (!ctx.subject || ctx.subject === "anon")) {
@@ -138,6 +138,11 @@ export function registerTool(server: McpServer, def: ToolDef, ctx: ToolContext):
         }
         if (def.tier === "premium") charge = await ctx.authorize(def.name);
         const { summary, data } = await def.run(args ?? {}, ctx);
+        // The SDK drops the response of a cancelled or disconnected request, so
+        // charging for it would take money for a result nobody receives.
+        if (extra?.signal?.aborted) {
+          throw new ToolError("cancelled", "The request was cancelled before its result was delivered; not charged.");
+        }
         // x402 settles only now that the tool has delivered; if settlement
         // fails, the result is withheld rather than given away.
         await charge?.settle?.();
