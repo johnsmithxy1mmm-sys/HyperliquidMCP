@@ -2803,3 +2803,20 @@ test("cancelling a HIP-3 order uses its asset id and is gated like an order", as
   assert.equal(live.mode, "blocked");
   assert.match(String(live.reason), /HL_ENABLE_HIP3_TRADING/);
 });
+
+test("the client cache drops expired entries instead of holding them until it is full", () => {
+  const cache = new TtlLruCache(500);
+  const realNow = Date.now;
+  let now = 1_000_000;
+  Date.now = () => now;
+  try {
+    // Fills fetched by start time get a new key every call and are never read again.
+    for (let i = 0; i < 100; i++) cache.set(`fillsT:0xwallet${i}:${now}`, new Array(1_000).fill(i), 5_000);
+    now += 6_000; // every TTL is over
+    cache.set("chs:0xwallet:", {}, 5_000); // the next write, e.g. the alert engine's next tick
+  } finally {
+    Date.now = realNow;
+  }
+
+  assert.equal((cache as unknown as { store: Map<string, unknown> }).store.size, 1);
+});
