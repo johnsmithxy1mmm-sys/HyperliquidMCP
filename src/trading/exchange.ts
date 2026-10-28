@@ -6,7 +6,7 @@
  */
 import type { Config } from "../config.js";
 import type { HyperliquidClient } from "../core/hlClient.js";
-import { resolveMarket, dexOf } from "../hl/markets.js";
+import { resolveMarket, dexOf, type MarketRow } from "../hl/markets.js";
 import { postJson } from "../core/http.js";
 import { ToolError, UpstreamError } from "../core/errors.js";
 import { isAddress } from "../core/format.js";
@@ -44,6 +44,22 @@ export interface ExecResult {
   builderAttached: { b: string; f: number } | null;
   agentAddress?: string;
   response?: unknown;
+  /** For a HIP-3 coin: the dex and asset id the order goes to. */
+  hip3?: { dex: string; assetId: number; note: string };
+}
+
+const HIP3_NOTE =
+  "Builder-deployed (HIP-3) market: its dex keeps its own collateral, and its deployer may charge up to 3x the usual fees.";
+
+/** A HIP-3 dex margins from its own balance: say how to fund it when an order is refused for margin. */
+function withHip3MarginHint(err: unknown): unknown {
+  if (!(err instanceof ToolError) || err.code !== "order_rejected" || !/margin|collateral|balance/i.test(err.message)) return err;
+  return new ToolError(
+    err.code,
+    `${err.message} HIP-3 dexes margin from their own balance: enable the unified account in the Hyperliquid app, ` +
+      `or transfer collateral to this dex.`,
+    err.details,
+  );
 }
 
 interface ExchangeApiResponse {
@@ -102,28 +118,30 @@ export class TradingService {
   }
 
   /**
-   * Resolve a coin for an order. HIP-3 coins resolve on their builder dex, but
-   * their exchange asset id is not the in-dex index used here: placing one would
-   * trade the main-dex asset that happens to share the index. Refuse them.
+   * Resolve a coin for an order with its exchange asset id. A HIP-3 coin's id is
+   * 100000 + perp_dex_index * 10000 + index_in_meta: its in-dex index alone
+   * would trade the main-dex asset that shares it.
    */
-  private async tradableMarket(coin: string) {
+  private async tradableMarket(coin: string): Promise<{ market: MarketRow; asset: number; dex?: string }> {
     const market = await resolveMarket(this.hl, coin);
-    if (dexOf(market.coin)) {
-      throw new ToolError("hip3_trading_unsupported", `Trading HIP-3 markets (${market.coin}) is not supported yet.`, {
-        coin: market.coin,
-      });
-    }
-    return market;
+    const dex = dexOf(market.coin);
+    if (!dex) return { market, asset: market.index };
+    const dexIndex = (await this.hl.perpDexs()).findIndex((d) => d?.name === dex);
+    if (dexIndex < 1) throw new ToolError("unknown_dex", `Perp dex "${dex}" is not listed.`, { coin: market.coin });
+    return { market, asset: 100_000 + dexIndex * 10_000 + market.index, dex };
   }
 
-  canSubmit(): { ok: boolean; reason?: string } {
+  canSubmit(hip3: boolean): { ok: boolean; reason?: string } {
     if (!this.config.tradingEnabled) return { ok: false, reason: "trading_disabled (set HL_ENABLE_TRADING=true)" };
     if (!this.config.agentPrivateKey) return { ok: false, reason: "no_agent_key (set HL_AGENT_PRIVATE_KEY)" };
+    if (hip3 && !this.config.hip3TradingEnabled) {
+      return { ok: false, reason: "hip3_trading_disabled (set HL_ENABLE_HIP3_TRADING=true after a testnet run)" };
+    }
     return { ok: true };
   }
 
   async placeOrder(params: OrderParams, opts: ExecOptions): Promise<ExecResult> {
-    const market = await this.tradableMarket(params.coin);
+    const { market, asset, dex } = await this.tradableMarket(params.coin);
     const isPerp = true;
 
     // Determine limit price. Market orders use IOC with a slippage-bounded price.
@@ -136,7 +154,7 @@ export class TradingService {
     const tif = params.limitPx === undefined ? "Ioc" : params.tif;
 
     const order: OrderWire = {
-      a: market.index,
+      a: asset,
       b: params.isBuy,
       p: formatPrice(px, market.szDecimals, isPerp),
       s: formatSize(params.sz, market.szDecimals),
@@ -187,13 +205,19 @@ export class TradingService {
     const action: Record<string, unknown> = { type: "order", orders: [order], grouping: "na" };
     if (builder) action.builder = builder;
 
-    return this.execute(action, builder, opts);
+    if (!dex) return this.execute(action, builder, opts);
+    const hip3 = { dex, assetId: asset, note: HIP3_NOTE };
+    try {
+      return { ...(await this.execute(action, builder, opts, true)), hip3 };
+    } catch (err) {
+      throw withHip3MarginHint(err);
+    }
   }
 
   async cancelOrder(coin: string, oid: number, opts: ExecOptions): Promise<ExecResult> {
-    const market = await this.tradableMarket(coin);
-    const action = { type: "cancel", cancels: [{ a: market.index, o: oid }] };
-    return this.execute(action, null, opts);
+    const { asset, dex } = await this.tradableMarket(coin);
+    const action = { type: "cancel", cancels: [{ a: asset, o: oid }] };
+    return this.execute(action, null, opts, Boolean(dex));
   }
 
   /**
@@ -230,8 +254,9 @@ export class TradingService {
     }
     const who = address ?? account;
     if (!who) throw new ToolError("no_address", "Provide `address`, or set HL_AGENT_PRIVATE_KEY to infer it.");
-    const state = await this.hl.clearinghouseState(who);
-    const market = await this.tradableMarket(coin);
+    const { market } = await this.tradableMarket(coin);
+    // A HIP-3 position lives in that dex's account, not the main one.
+    const state = await this.hl.clearinghouseState(who, dexOf(market.coin));
     const pos = state.assetPositions.find((p) => p.position.coin === market.coin);
     const szi = pos ? Number(pos.position.szi) : 0;
     if (!pos || szi === 0) {
@@ -247,6 +272,7 @@ export class TradingService {
     action: Record<string, unknown>,
     builder: { b: string; f: number } | null,
     opts: ExecOptions,
+    hip3 = false,
   ): Promise<ExecResult> {
     // Dry-run (default) or unconfirmed => preview only, never signs or sends.
     if (opts.dryRun || !opts.confirm) {
@@ -258,7 +284,7 @@ export class TradingService {
       };
     }
 
-    const gate = this.canSubmit();
+    const gate = this.canSubmit(hip3);
     if (!gate.ok) {
       return { mode: "blocked", reason: gate.reason, action, builderAttached: builder };
     }
