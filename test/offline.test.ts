@@ -63,6 +63,7 @@ import { ExecutionRunner } from "../src/execution/runner.js";
 import { traderReport } from "../src/tools/premium/traderReport.js";
 import { hip3Analytics } from "../src/tools/premium/hip3Analytics.js";
 import { PolymarketClient } from "../src/polymarket/client.js";
+import { vaultScreener } from "../src/tools/premium/vaultScreener.js";
 
 test("formatSize rounds to szDecimals", () => {
   assert.equal(formatSize(1.23456789, 3), "1.235");
@@ -1679,4 +1680,27 @@ test("Polymarket markets are fetched by 24h volume across several pages, not the
 
   assert.ok(urls.every((u) => u.includes("order=volume24hr") && u.includes("ascending=false")));
   assert.equal(markets.length, 1000);
+});
+
+test("hl_vault_screener does not read a withdrawal as a drawdown", async () => {
+  const vault = "0x9999999999999999999999999999999999999999";
+  // Followers withdrew half the vault; the strategy itself made and lost nothing.
+  const details = {
+    name: "flat", leader: vault, apr: 0, followers: [],
+    portfolio: [["allTime", {
+      accountValueHistory: [[0, "2000"], [1, "1000"], [2, "1000"]],
+      pnlHistory: [[0, "0"], [1, "0"], [2, "0"]],
+    }]],
+  };
+  const ctx = { config: { vaultAddresses: [] }, hl: { rawInfo: async () => details } } as unknown as ToolContext;
+
+  const { data } = await vaultScreener.run({ vaults: [vault] }, ctx);
+
+  assert.equal((data as { vaults: Array<{ maxDrawdownPct: number }> }).vaults[0].maxDrawdownPct, 0);
+});
+
+test("hl_vault_screener caps how many vaults one call may fan out to", () => {
+  const vaults = Array.from({ length: 51 }, (_, i) => `0x${String(i).padStart(40, "0")}`);
+
+  assert.equal(vaultScreener.inputSchema.vaults?.safeParse(vaults).success, false);
 });
