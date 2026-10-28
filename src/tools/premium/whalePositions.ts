@@ -21,6 +21,7 @@ export const whalePositions: ToolDef = {
   outputSchema: {
     source: z.string(),
     walletsQueried: z.number(),
+    walletsRequested: z.number(),
     asOf: z.number(),
     coins: z.array(z.record(z.any())),
     disclaimer: z.string(),
@@ -32,6 +33,9 @@ export const whalePositions: ToolDef = {
     const cohort = await resolveCohort(ctx, args.cohort as string[] | undefined, topN);
     const accounts = await fetchCohortAccounts(ctx, cohort.addresses);
     const agg = aggregateByCoin(accounts);
+    // A wallet that failed to load would read as an exit: a partial cohort is
+    // neither compared against nor recorded as a baseline.
+    const complete = accounts.length === cohort.addresses.length;
 
     const now = Date.now();
     let coins = [...agg.values()];
@@ -44,12 +48,12 @@ export const whalePositions: ToolDef = {
       const key = `${c.coin}:${shortHash(cohortKey)}`;
       const snap1h = ctx.snapshots.nearest("whalePositions", key, 3_600_000, 1_800_000);
       const snap24h = ctx.snapshots.nearest("whalePositions", key, 86_400_000, 6 * 3_600_000);
-      ctx.snapshots.record("whalePositions", key, { netNtlUsd: c.netNtlUsd }, now);
+      if (complete) ctx.snapshots.record("whalePositions", key, { netNtlUsd: c.netNtlUsd }, now);
       return {
         ...c,
         netBias: c.netNtlUsd >= 0 ? "long" : "short",
-        change1hUsd: delta(c.netNtlUsd, snap1h?.value),
-        change24hUsd: delta(c.netNtlUsd, snap24h?.value),
+        change1hUsd: complete ? delta(c.netNtlUsd, snap1h?.value) : null,
+        change24hUsd: complete ? delta(c.netNtlUsd, snap24h?.value) : null,
       };
     });
 
@@ -63,6 +67,7 @@ export const whalePositions: ToolDef = {
       data: {
         source: cohort.source,
         walletsQueried: accounts.length,
+        walletsRequested: cohort.addresses.length,
         asOf: now,
         coins: enriched,
         disclaimer: ANALYTICS_DISCLAIMER,

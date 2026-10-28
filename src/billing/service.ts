@@ -9,7 +9,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { Config } from "../config.js";
-import { PaymentRequiredError } from "../core/errors.js";
+import { PaymentRequiredError, ToolError } from "../core/errors.js";
 import {
   getDb,
   getKey,
@@ -33,6 +33,9 @@ export interface RequestAuth {
 
 /** Ceiling on distinct self-serve fingerprints, so the grants table is bounded. */
 const MAX_SELF_SERVE_KEYS = 5_000;
+
+/** One re-issue per requester per hour, so a request loop cannot churn keys and rows. */
+const FREE_KEY_REISSUE_COOLDOWN_MS = 60 * 60_000;
 
 export class BillingService {
   private readonly db: Database.Database;
@@ -65,6 +68,12 @@ export class BillingService {
     };
     provision(process.env.HYPERSIGNAL_PRO_KEYS, "pro");
     provision(process.env.HYPERSIGNAL_FREE_KEYS, "free");
+    // Both lists empty is far more likely a secret lost on redeploy than an
+    // operator revoking every customer at once; keep the keys and say so.
+    if (present.length === 0) {
+      log.warn("HYPERSIGNAL_PRO_KEYS and HYPERSIGNAL_FREE_KEYS are both empty; bootstrap keys left as they were");
+      return;
+    }
     const revoked = disableMissingBootstrapKeys(this.db, present);
     if (revoked > 0) log.info("revoked bootstrap keys removed from env", { revoked });
   }
@@ -89,8 +98,18 @@ export class BillingService {
    * is not a quota reset), plus a global ceiling on distinct fingerprints so
    * the table cannot be grown without limit.
    */
-  issueFreeKey(fingerprint: string): { rawKey: string; monthlyPremiumCalls: number; reissued: boolean } {
+  issueFreeKey(
+    fingerprint: string,
+    now = Date.now(),
+  ): { rawKey: string; monthlyPremiumCalls: number; reissued: boolean } {
     const prior = getFreeKeyGrant(this.db, fingerprint);
+    if (prior && now - prior.grantedAt < FREE_KEY_REISSUE_COOLDOWN_MS) {
+      const minutes = Math.ceil((prior.grantedAt + FREE_KEY_REISSUE_COOLDOWN_MS - now) / 60_000);
+      throw new ToolError(
+        "free_key_cooldown",
+        `A free key was issued to you less than an hour ago. Use that key, or retry in ${minutes} min.`,
+      );
+    }
     if (!prior && countFreeKeyGrants(this.db) >= MAX_SELF_SERVE_KEYS) {
       throw new Error(
         `Self-serve free keys are exhausted (${MAX_SELF_SERVE_KEYS} issued). Contact the operator for a key.`,
@@ -99,7 +118,7 @@ export class BillingService {
     const rawKey = `hs_free_${randomBytes(24).toString("base64url")}`;
     const keyHash = this.hash(rawKey);
     upsertKey(this.db, keyHash, "free", "self-serve");
-    recordFreeKeyGrant(this.db, fingerprint, keyHash);
+    recordFreeKeyGrant(this.db, fingerprint, keyHash, now);
     log.info("self-serve free key issued", { reissued: Boolean(prior), grants: (prior?.grants ?? 0) + 1 });
     return {
       rawKey,

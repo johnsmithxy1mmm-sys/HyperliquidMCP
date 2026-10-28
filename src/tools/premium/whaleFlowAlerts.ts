@@ -32,6 +32,7 @@ export const whaleFlowAlerts: ToolDef = {
   outputSchema: {
     source: z.string(),
     walletsQueried: z.number(),
+    walletsRequested: z.number(),
     lookbackMinutes: z.number(),
     baselineFound: z.boolean(),
     alerts: z.array(z.record(z.any())),
@@ -46,6 +47,25 @@ export const whaleFlowAlerts: ToolDef = {
 
     const cohort = await resolveCohort(ctx, args.cohort as string[] | undefined, topN);
     const accounts = await fetchCohortAccounts(ctx, cohort.addresses);
+    const walletsRequested = cohort.addresses.length;
+    // A wallet that failed to load would read as a full exit; neither compare
+    // nor record a partial cohort.
+    if (accounts.length < walletsRequested) {
+      return {
+        summary:
+          `Only ${accounts.length}/${walletsRequested} cohort wallets loaded; flow not computed ` +
+          `(a missing wallet would look like an exit). Retry shortly.`,
+        data: {
+          source: cohort.source,
+          walletsQueried: accounts.length,
+          walletsRequested,
+          lookbackMinutes,
+          baselineFound: false,
+          alerts: [],
+          disclaimer: ANALYTICS_DISCLAIMER,
+        },
+      };
+    }
     const agg = aggregateByCoin(accounts);
     const cohortKey = shortHash(cohort.addresses.slice().sort().join(","));
     const now = Date.now();
@@ -101,6 +121,7 @@ export const whaleFlowAlerts: ToolDef = {
       data: {
         source: cohort.source,
         walletsQueried: accounts.length,
+        walletsRequested,
         lookbackMinutes,
         baselineFound,
         alerts,

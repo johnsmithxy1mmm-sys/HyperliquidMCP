@@ -50,6 +50,12 @@ import { registerTool, type ToolDef } from "../src/tools/registry.js";
 import { BillingService } from "../src/billing/service.js";
 import { ToolError } from "../src/core/errors.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import express from "express";
+import type { AddressInfo } from "node:net";
+import { ipBucket, TRUST_PROXY_SETTING } from "../src/core/clientIp.js";
+import { requestFreeKey } from "../src/tools/free/requestFreeKey.js";
+import { whaleFlowAlerts } from "../src/tools/premium/whaleFlowAlerts.js";
+import { whalePositions } from "../src/tools/premium/whalePositions.js";
 
 test("formatSize rounds to szDecimals", () => {
   assert.equal(formatSize(1.23456789, 3), "1.235");
@@ -739,7 +745,7 @@ test("self-serve free key: one active key per fingerprint, re-issue is not a quo
   upsertKey(db, "hash2", "free", "self-serve");
   recordFreeKeyGrant(db, fp, "hash2");
 
-  assert.equal(getKey(db, "hash1")?.disabled, 1, "old key must be revoked");
+  assert.equal(getKey(db, "hash1"), undefined, "old key must be removed, not left behind as a dead row");
   assert.equal(getKey(db, "hash2")?.disabled, 0, "new key must be active");
   assert.equal(monthlyTotal(db, "hash2", "2026-07"), 40, "usage must carry over");
   assert.equal(monthlyTotal(db, "hash1", "2026-07"), 0);
@@ -1189,4 +1195,189 @@ test("price_move fires once per crossing and re-arms after the move fades", () =
   const recross = evaluateAlert({ ...base, lastState: fades.state }, { now: 4, markPx: 98, priorPx: 100 });
 
   assert.deepEqual([cross.fired, persists.fired, fades.fired, recross.fired], [true, false, false, true]);
+});
+
+test("behind one proxy, a client-sent X-Forwarded-For cannot choose the client IP", async () => {
+  const app = express();
+  app.set("trust proxy", TRUST_PROXY_SETTING);
+  app.get("/ip", (req, res) => {
+    res.send(req.ip);
+  });
+  const server = app.listen(0);
+  const { port } = server.address() as AddressInfo;
+
+  // The client forges 6.6.6.6; the proxy (Fly, Caddy) appends the real peer 1.2.3.4.
+  const res = await fetch(`http://127.0.0.1:${port}/ip`, { headers: { "X-Forwarded-For": "6.6.6.6, 1.2.3.4" } });
+  server.close();
+
+  assert.equal(await res.text(), "1.2.3.4");
+});
+
+test("ipBucket collapses an IPv6 /64 to one requester and unwraps IPv4-mapped addresses", () => {
+  assert.equal(ipBucket("2001:db8:1:2::a"), ipBucket("2001:0db8:0001:0002:ffff:1:2:3"));
+  assert.notEqual(ipBucket("2001:db8:1:2::a"), ipBucket("2001:db8:1:3::a"));
+  assert.equal(ipBucket("::ffff:1.2.3.4"), "1.2.3.4");
+  assert.equal(ipBucket("1.2.3.4"), "1.2.3.4");
+});
+
+test("hl_request_free_key re-issues at most once an hour per requester", async () => {
+  const billing = new BillingService({
+    dbPath: join(tmpdir(), `hypersignal-test-${Date.now()}.db`),
+    x402: { enabled: false },
+  } as unknown as Config);
+  const ctx = (clientIp: string) => ({ mode: "http", billing, clientIp }) as unknown as ToolContext;
+
+  await requestFreeKey.run({}, ctx("2001:db8:77:1::a"));
+
+  // Another address in the same /64, minutes later: same requester, refused.
+  await assert.rejects(
+    requestFreeKey.run({}, ctx("2001:db8:77:1::b")),
+    (err: unknown) => err instanceof ToolError && err.code === "free_key_cooldown",
+  );
+});
+
+test("a free key may be re-issued again after the hour has passed", () => {
+  const billing = new BillingService({
+    dbPath: join(tmpdir(), `hypersignal-test-${Date.now()}.db`),
+    x402: { enabled: false },
+  } as unknown as Config);
+  const fingerprint = `cooldown-${Date.now()}-${Math.random()}`;
+  const t0 = 1_900_000_000_000;
+
+  billing.issueFreeKey(fingerprint, t0);
+
+  assert.equal(billing.issueFreeKey(fingerprint, t0 + 61 * 60_000).reissued, true);
+});
+
+/** A clearinghouseState with one BTC position (szi > 0 long, < 0 short). */
+function walletWithBtc(szi: number) {
+  const ntl = String(Math.abs(szi) * 60000);
+  return {
+    marginSummary: { accountValue: "1000000", totalNtlPos: ntl, totalRawUsd: "0", totalMarginUsed: "0" },
+    crossMarginSummary: { accountValue: "1000000", totalNtlPos: ntl, totalRawUsd: "0", totalMarginUsed: "0" },
+    crossMaintenanceMarginUsed: "0",
+    withdrawable: "0",
+    assetPositions: [
+      {
+        type: "oneWay",
+        position: {
+          coin: "BTC", szi: String(szi), entryPx: "60000", positionValue: ntl, unrealizedPnl: "0",
+          returnOnEquity: "0", leverage: { type: "cross", value: 1 }, liquidationPx: null, marginUsed: "0", maxLeverage: 40,
+        },
+      },
+    ],
+  };
+}
+
+test("whale_net_flip does not fire when a cohort wallet failed to load", async () => {
+  const whale = "0x1111111111111111111111111111111111111111";
+  const minnow = "0x2222222222222222222222222222222222222222";
+  // The cohort was net long (the whale), last seen with sign +1.
+  const alert: AlertRecord = {
+    id: "w", subject: "s", type: "whale_net_flip", params: { coin: "BTC", cohort: [whale, minnow] },
+    enabled: true, cooldownMinutes: 5, lastFiredAt: null, lastState: { sign: 1 }, createdAt: 0,
+  };
+  const recorded: unknown[] = [];
+  const store = {
+    alerts: { listActive: () => [alert], updateState: () => undefined, recordFired: () => undefined },
+    signals: { dueForScoring: () => [], record: (s: unknown) => recorded.push(s) },
+    snapshots: { record: () => undefined },
+    scores: { due: () => [] },
+  } as unknown as Warehouse;
+  const hl = {
+    metaAndAssetCtxs: async () => [
+      { universe: [{ name: "BTC", szDecimals: 5, maxLeverage: 40 }] },
+      [{ markPx: "60000", prevDayPx: "60000", funding: "0", oraclePx: "60000", openInterest: "0", dayNtlVlm: "0" }],
+    ],
+    // The whale's request fails; only the small short loads.
+    clearinghouseState: async (address: string) => {
+      if (address === whale) throw new Error("429 Too Many Requests");
+      return walletWithBtc(-1);
+    },
+  } as unknown as HyperliquidClient;
+  const signer = { sign: () => ({ signature: "sig" }) } as unknown as SignalSigner;
+  const engine = new AlertEngine(hl, store, signer, { store, hl } as unknown as ToolContext);
+
+  const fired = await engine.tick(1_000_000);
+
+  assert.equal(fired, 0);
+  assert.equal(recorded.length, 0, "no signed signal from a partial cohort");
+});
+
+/** Two-wallet cohort whose whale (net long 10 BTC an hour ago) now fails to load. */
+function partialCohortCtx() {
+  const whale = "0x3333333333333333333333333333333333333333";
+  const minnow = "0x4444444444444444444444444444444444444444";
+  const cohortKey = shortHash([whale, minnow].sort().join(","));
+  const snapshots = new InMemorySnapshotStore();
+  const hourAgo = Date.now() - 3_600_000;
+  snapshots.record("whaleFlow", `BTC:${cohortKey}`, { netNtlUsd: 540_000 }, hourAgo);
+  snapshots.record("whalePositions", `BTC:${cohortKey}`, { netNtlUsd: 540_000 }, hourAgo);
+  const hl = {
+    clearinghouseState: async (address: string) => {
+      if (address === whale) throw new Error("429 Too Many Requests");
+      return walletWithBtc(-1);
+    },
+  };
+  return { cohort: [whale, minnow], ctx: { hl, snapshots, store: { cohort: { get: () => null } } } as unknown as ToolContext };
+}
+
+test("hl_whale_flow_alerts reports no flow from a partially loaded cohort", async () => {
+  const { cohort, ctx } = partialCohortCtx();
+
+  const { data } = await whaleFlowAlerts.run({ cohort, thresholdUsd: 100_000, lookbackMinutes: 60 }, ctx);
+
+  assert.deepEqual((data as { alerts: unknown[] }).alerts, []);
+  assert.equal((data as { walletsRequested: number }).walletsRequested, 2);
+});
+
+test("hl_whale_positions gives no 1h change for a partially loaded cohort", async () => {
+  const { cohort, ctx } = partialCohortCtx();
+
+  const { data } = await whalePositions.run({ cohort }, ctx);
+
+  const btc = (data as { coins: Array<{ coin: string; change1hUsd: number | null }> }).coins.find((c) => c.coin === "BTC");
+  assert.equal(btc?.change1hUsd, null);
+  assert.equal((data as { walletsRequested: number }).walletsRequested, 2);
+});
+
+test("alert engine status shows when the last tick ran and why it failed", async () => {
+  let failing = true;
+  const store = {
+    alerts: { listActive: () => [] },
+    signals: { dueForScoring: () => [] },
+    scores: {
+      due: () => {
+        if (failing) throw new Error("database is locked");
+        return [];
+      },
+    },
+  } as unknown as Warehouse;
+  const engine = new AlertEngine({} as HyperliquidClient, store, {} as SignalSigner, {} as ToolContext);
+
+  await engine.tick(1_000);
+  const afterFailure = engine.status();
+  failing = false;
+  await engine.tick(2_000);
+
+  assert.deepEqual(afterFailure, { lastTickAt: 1_000, lastTickError: "database is locked" });
+  assert.deepEqual(engine.status(), { lastTickAt: 2_000, lastTickError: null });
+});
+
+test("a deploy with both key env vars empty does not revoke every bootstrap key", () => {
+  const db = getDb(join(tmpdir(), `hypersignal-test-${Date.now()}.db`));
+  const keyHash = `pro-bootstrap-${Date.now()}-${Math.random()}`;
+  upsertKey(db, keyHash, "pro", "pro-bootstrap");
+  const saved = { pro: process.env.HYPERSIGNAL_PRO_KEYS, free: process.env.HYPERSIGNAL_FREE_KEYS };
+  delete process.env.HYPERSIGNAL_PRO_KEYS;
+  delete process.env.HYPERSIGNAL_FREE_KEYS;
+
+  try {
+    new BillingService({ dbPath: join(tmpdir(), "unused.db"), x402: { enabled: false } } as unknown as Config);
+  } finally {
+    if (saved.pro !== undefined) process.env.HYPERSIGNAL_PRO_KEYS = saved.pro;
+    if (saved.free !== undefined) process.env.HYPERSIGNAL_FREE_KEYS = saved.free;
+  }
+
+  assert.equal(getKey(db, keyHash)?.disabled, 0, "a missing secret must not lock out every paying customer");
 });

@@ -19,6 +19,7 @@ import { CohortRefresher } from "./hl/cohortRefresh.js";
 import { ScoreSampler } from "./smartmoney/scoreSampler.js";
 import type { ToolContext } from "./tools/registry.js";
 import { log } from "./logger.js";
+import { TRUST_PROXY_SETTING } from "./core/clientIp.js";
 
 function envFlag(name: string): boolean {
   return ["1", "true", "yes", "on"].includes((process.env[name] ?? "").trim().toLowerCase());
@@ -64,7 +65,8 @@ async function main(): Promise<void> {
 
   // Standing-alert engine: evaluates alerts server-side and builds the track record.
   const cohortCtx = { config, hl: core.hl, store: core.store } as unknown as ToolContext;
-  new AlertEngine(core.hl, core.store, core.signer, cohortCtx).start();
+  const engine = new AlertEngine(core.hl, core.store, core.signer, cohortCtx);
+  engine.start();
 
   // Samples the server-selected cohort daily so the score calibration keeps
   // accumulating evidence instead of waiting on customer traffic.
@@ -74,7 +76,7 @@ async function main(): Promise<void> {
   app.disable("x-powered-by");
   // Behind Fly/Nginx/Caddy the client IP arrives in X-Forwarded-For; only
   // trust it when explicitly deployed behind a proxy.
-  if (envFlag("TRUST_PROXY")) app.set("trust proxy", true);
+  if (envFlag("TRUST_PROXY")) app.set("trust proxy", TRUST_PROXY_SETTING);
 
   app.use(express.json({ limit: "2mb" }));
 
@@ -112,8 +114,19 @@ async function main(): Promise<void> {
   const maxPerMinute = Math.max(1, Number(process.env.HTTP_RATE_LIMIT_PER_MIN ?? 120) || 120);
   app.use(config.httpPath, ipLimiter(maxPerMinute));
 
+  // Always 200 (a Hyperliquid hiccup must not make Fly restart the machine);
+  // `engine` shows background work that otherwise fails silently.
   app.get("/healthz", (_req: Request, res: Response) => {
-    res.json({ ok: true, server: SERVER_NAME, version: SERVER_VERSION, network: config.network });
+    res.json({
+      ok: true,
+      server: SERVER_NAME,
+      version: SERVER_VERSION,
+      network: config.network,
+      engine: {
+        ...engine.status(),
+        scores: { ...core.store.scores.counts(), abandoned: core.store.scores.abandoned() },
+      },
+    });
   });
 
   // Friendly landing on the root so platform health checks / browsers get a

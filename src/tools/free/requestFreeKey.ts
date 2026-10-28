@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type { ToolDef } from "../registry.js";
 import { ToolError } from "../../core/errors.js";
 import { TIERS } from "../../billing/tiers.js";
+import { ipBucket } from "../../core/clientIp.js";
 
 /**
  * Self-serve free key.
@@ -53,13 +54,14 @@ export const requestFreeKey: ToolDef = {
     // Hash the IP: the fingerprint only ever needs to be comparable, never
     // readable, so the raw address is not stored.
     const fingerprint = createHash("sha256")
-      .update(ctx.clientIp ?? "unknown")
+      .update(ipBucket(ctx.clientIp ?? "unknown"))
       .digest("hex");
 
     let issued: { rawKey: string; monthlyPremiumCalls: number; reissued: boolean };
     try {
       issued = ctx.billing.issueFreeKey(fingerprint);
     } catch (err) {
+      if (err instanceof ToolError) throw err;
       throw new ToolError("free_keys_exhausted", err instanceof Error ? err.message : String(err));
     }
     const usedThisMonth = ctx.billing.freeKeyUsage(fingerprint) ?? 0;
