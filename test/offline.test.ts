@@ -2820,3 +2820,45 @@ test("the client cache drops expired entries instead of holding them until it is
 
   assert.equal((cache as unknown as { store: Map<string, unknown> }).store.size, 1);
 });
+
+/** hip3Hl overrides with two dexes whose names differ only in case, as on testnet. */
+function caseDexes() {
+  const row = { markPx: "10", midPx: "10", prevDayPx: "10", funding: "0", oraclePx: "10", openInterest: "1", dayNtlVlm: "0" };
+  const universes: Record<string, string[]> = { xyz: ["xyz:XYZ100"], VOLMEX: ["VOLMEX:BVIV"], volmex: ["volmex:TEST"] };
+  return {
+    perpDexs: async () => [null, { name: "xyz" }, { name: "VOLMEX" }, { name: "volmex" }],
+    metaAndAssetCtxsForDex: async (dex: string) => {
+      const names = universes[dex];
+      return names ? [{ universe: names.map((name) => ({ name, szDecimals: 2, maxLeverage: 5 })) }, names.map(() => row)] : null;
+    },
+  };
+}
+
+test("a dex name matches exactly first, and case-insensitively only when that is unambiguous", async () => {
+  const { getMarkets } = await import("../src/tools/free/getMarkets.js");
+  const ctx = { hl: hip3Hl(caseDexes()) } as unknown as ToolContext;
+  const coins = async (dex: string) =>
+    ((await getMarkets.run({ dex }, ctx)).data as { markets: Array<{ coin: string }> }).markets.map((m) => m.coin);
+
+  assert.deepEqual(await coins("VOLMEX"), ["VOLMEX:BVIV"]);
+  assert.deepEqual(await coins("volmex"), ["volmex:TEST"]);
+  assert.deepEqual(await coins("XYZ"), ["xyz:XYZ100"]);
+  await assert.rejects(
+    getMarkets.run({ dex: "Volmex" }, ctx),
+    (err: unknown) => err instanceof ToolError && err.code === "unknown_dex" && /VOLMEX/.test(err.message) && /volmex/.test(err.message),
+  );
+});
+
+test("a coin on a dex named with capitals resolves and trades on that exact dex", async () => {
+  const { resolveMarket } = await import("../src/hl/markets.js");
+
+  const market = await resolveMarket(hip3Hl(caseDexes()), "VOLMEX:BVIV");
+  const order = await hip3Trading({ hl: caseDexes() }).placeOrder(
+    { coin: "VOLMEX:BVIV", isBuy: true, sz: 1, reduceOnly: false, tif: "Ioc" },
+    { confirm: false, dryRun: true },
+  );
+
+  assert.equal(market.coin, "VOLMEX:BVIV");
+  // 100000 + perp_dex_index (VOLMEX = 2, not volmex = 3) * 10000 + index_in_meta (0)
+  assert.equal(order.hip3?.assetId, 120_000);
+});

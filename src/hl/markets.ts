@@ -7,7 +7,7 @@ import type { HyperliquidClient } from "../core/hlClient.js";
 import type { AssetMeta, AssetCtx } from "./types.js";
 import { num, annualizeHourlyFunding } from "../core/format.js";
 import { unknownCoin } from "../core/errors.js";
-import { assertKnownDex } from "./account.js";
+import { resolveDex } from "./account.js";
 
 export interface MarketRow {
   coin: string;
@@ -55,13 +55,12 @@ export function buildRow(meta: AssetMeta, ctx: AssetCtx, index: number): MarketR
 /** HIP-3 coins carry their builder dex as a prefix ("xyz:XYZ100"); main-dex coins have none. */
 export function dexOf(coin: string): string | undefined {
   const i = coin.indexOf(":");
-  return i > 0 ? coin.slice(0, i).trim().toLowerCase() : undefined;
+  return i > 0 ? coin.slice(0, i).trim() : undefined;
 }
 
 /** Market rows of the main perp dex, or of one HIP-3 builder dex. */
 export async function getMarketRows(hl: HyperliquidClient, dex?: string): Promise<MarketRow[]> {
-  if (dex) await assertKnownDex(hl, dex);
-  const [meta, ctxs] = dex ? await hl.metaAndAssetCtxsForDex(dex) : await hl.metaAndAssetCtxs();
+  const [meta, ctxs] = dex ? await hl.metaAndAssetCtxsForDex(await resolveDex(hl, dex)) : await hl.metaAndAssetCtxs();
   const rows: MarketRow[] = [];
   for (let i = 0; i < meta.universe.length; i++) {
     const m = meta.universe[i];
@@ -81,9 +80,4 @@ export async function resolveMarket(hl: HyperliquidClient, coin: string): Promis
   const ci = rows.find((r) => r.coin.toLowerCase() === wanted.toLowerCase());
   if (ci) return ci;
   throw unknownCoin(coin);
-}
-
-/** Resolve just the asset index for exchange/order calls. */
-export async function resolveAssetIndex(hl: HyperliquidClient, coin: string): Promise<number> {
-  return (await resolveMarket(hl, coin)).index;
 }

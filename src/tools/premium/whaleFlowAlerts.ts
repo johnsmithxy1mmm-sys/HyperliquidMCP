@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { ToolDef } from "../registry.js";
 import { resolveCohort } from "../../hl/cohort.js";
 import { fetchCohortAccounts, aggregateByCoin, cohortSizeFor, ANALYTICS_DISCLAIMER } from "../../hl/whales.js";
-import { dexArg } from "../../hl/account.js";
+import { resolveDexArg } from "../../hl/account.js";
 import { round, shortHash } from "../../core/format.js";
 
 /**
@@ -47,7 +47,7 @@ export const whaleFlowAlerts: ToolDef = {
   },
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   run: async (args, ctx) => {
-    const dex = dexArg(args.dex);
+    const dex = await resolveDexArg(ctx.hl, args.dex);
     const size = cohortSizeFor(dex, (args.topN as number) ?? 50);
     const thresholdUsd = (args.thresholdUsd as number) ?? 250_000;
     const lookbackMinutes = (args.lookbackMinutes as number) ?? 60;

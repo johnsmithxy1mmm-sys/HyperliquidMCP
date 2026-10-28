@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { ToolDef } from "../registry.js";
 import { assertAddress, num, paginate } from "../../core/format.js";
-import { assertKnownDex, dexArg } from "../../hl/account.js";
+import { resolveDexArg } from "../../hl/account.js";
 
 export const getOpenOrders: ToolDef = {
   name: "hl_get_open_orders",
@@ -27,8 +27,7 @@ export const getOpenOrders: ToolDef = {
   run: async (args, ctx) => {
     const address = assertAddress(String(args.address));
     const coinFilter = (args.coin as string | undefined)?.toUpperCase();
-    const dex = dexArg(args.dex);
-    if (dex && dex !== "all") await assertKnownDex(ctx.hl, dex);
+    const dex = await resolveDexArg(ctx.hl, args.dex);
     const dexs = dex === "all" ? [undefined, ...(await ctx.hl.perpDexs()).flatMap((d) => (d?.name ? [d.name] : []))] : [dex || undefined];
     const raw = (await Promise.all(dexs.map((d) => ctx.hl.openOrders(address, d)))).flat();
 
