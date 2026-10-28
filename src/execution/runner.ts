@@ -40,6 +40,16 @@ const INTERRUPTED_NOTE =
   "The server stopped before this plan finished; its pending slices were not sent and will not be. " +
   "A slice in flight at that moment may still have filled: check positions before re-running.";
 
+// shortcut: a PID reused by an unrelated process hides that plan until it exits; store a boot id if that matters.
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
 /** Consecutive failed slices after which a live plan stops firing the rest. */
 const MAX_CONSECUTIVE_CHILD_ERRORS = 3;
 
@@ -53,19 +63,36 @@ export class ExecutionRunner {
     private readonly db?: Database.Database,
   ) {
     if (!db) return;
-    db.exec(`CREATE TABLE IF NOT EXISTS execution_plans (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, plan TEXT NOT NULL)`);
-    for (const row of db.prepare(`SELECT plan FROM execution_plans`).all() as Array<{ plan: string }>) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS execution_plans (
+        id         TEXT PRIMARY KEY,
+        created_at INTEGER NOT NULL,
+        owner_pid  INTEGER NOT NULL,
+        plan       TEXT NOT NULL
+      );
+    `);
+    const rows = db.prepare(`SELECT plan, owner_pid FROM execution_plans`).all() as Array<{ plan: string; owner_pid: number }>;
+    for (const row of rows) {
       const plan = JSON.parse(row.plan) as ExecutionPlan;
-      // Still "running" in the DB: the process that ran it died mid-plan.
-      if (plan.status === "running") this.interrupt(plan);
+      if (plan.status === "running") {
+        // Another stdio server on the same DB is still sending it: not ours to touch.
+        if (row.owner_pid !== process.pid && isAlive(row.owner_pid)) continue;
+        // Its process died mid-plan.
+        this.interrupt(plan);
+      }
       this.plans.set(plan.id, plan);
     }
   }
 
   private save(plan: ExecutionPlan): void {
-    this.db
-      ?.prepare(`INSERT OR REPLACE INTO execution_plans (id, created_at, plan) VALUES (?, ?, ?)`)
-      .run(plan.id, plan.createdAt, JSON.stringify(plan));
+    // A failed write must not crash the process between two live slices.
+    try {
+      this.db
+        ?.prepare(`INSERT OR REPLACE INTO execution_plans (id, created_at, owner_pid, plan) VALUES (?, ?, ?, ?)`)
+        .run(plan.id, plan.createdAt, process.pid, JSON.stringify(plan));
+    } catch (err) {
+      log.warn("execution plan not saved", { plan: plan.id, err: String(err) });
+    }
   }
 
   private interrupt(plan: ExecutionPlan): void {

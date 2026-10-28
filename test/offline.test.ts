@@ -1600,14 +1600,15 @@ test("a live TWAP cut short by a crash comes back interrupted and is not resumed
   const crashed = new ExecutionRunner(trading, db);
   const plan = crashed.schedule({
     kind: "twap", coin: "BTC", isBuy: true, reduceOnly: false, live: true,
-    children: [{ index: 0, size: 0.01, atOffsetMs: 0 }, { index: 1, size: 0.01, atOffsetMs: 60_000 }],
+    children: [{ index: 0, size: 0.01, atOffsetMs: 0 }, { index: 1, size: 0.01, atOffsetMs: 200 }],
   });
   await new Promise((resolve) => setTimeout(resolve, 20)); // the first slice goes out
 
   // A process that died leaves its plan "running" in the DB; the next one reads it from there.
   const restarted = new ExecutionRunner(trading, db);
   const after = restarted.get(plan.id);
-  crashed.cancel(plan.id); // stop the dead process's timer so the test can exit
+  crashed.cancel(plan.id); // the dead process's timer dies with it
+  await new Promise((resolve) => setTimeout(resolve, 300)); // past slice 1's time, had it been resumed
 
   assert.equal(after?.status, "interrupted");
   assert.deepEqual(after?.children.map((c) => c.status), ["submitted", "pending"]);
@@ -1627,6 +1628,23 @@ test("a plan cut short by shutdown is stored as interrupted, not as cancelled by
   runner.cancelAllPending();
 
   assert.equal(new ExecutionRunner(trading, db).get(plan.id)?.status, "interrupted");
+});
+
+test("a plan another live process is running is left alone, not marked interrupted", () => {
+  const db = new BetterSqlite3(":memory:");
+  const trading = { placeOrder: async () => ({ mode: "submitted" }) } as unknown as TradingService;
+  const first = new ExecutionRunner(trading, db);
+  const plan = first.schedule({
+    kind: "twap", coin: "BTC", isBuy: true, reduceOnly: false, live: true,
+    children: [{ index: 0, size: 0.01, atOffsetMs: 60_000 }],
+  });
+  db.prepare(`UPDATE execution_plans SET owner_pid = ?`).run(process.ppid); // owned by a process that is alive
+
+  const second = new ExecutionRunner(trading, db);
+  first.cancel(plan.id);
+
+  assert.equal(second.get(plan.id), undefined);
+  assert.equal(second.pending().length, 0, "shutting down the second server must not touch the first one's plan");
 });
 
 test("Polymarket 'Up or Down' markets are direction bets, not price thresholds", () => {
