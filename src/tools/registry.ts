@@ -17,6 +17,7 @@ import type { SignalSigner } from "../signals/signer.js";
 import type { TradingService } from "../trading/exchange.js";
 import type { ExecutionRunner } from "../execution/runner.js";
 import type { TelegramBot } from "../telegram/bot.js";
+import type { WebhookSender } from "../webhook/webhooks.js";
 import { ToolError } from "../core/errors.js";
 import { randomBytes } from "node:crypto";
 import { log } from "../logger.js";
@@ -63,6 +64,8 @@ export interface ToolContext {
   billing?: BillingLike;
   /** Telegram delivery, when TELEGRAM_BOT_TOKEN is set (http mode). */
   telegram?: TelegramBot;
+  /** Webhook delivery of fired alerts (http mode). */
+  webhooks?: WebhookSender;
   /**
    * Premium billing gate. Free/trading tools ignore it; premium tools await it
    * first. Returns what it charged, if anything.

@@ -48,6 +48,7 @@ export interface BuildServerOptions {
   /** Billing service (http only) — self-serve free-key issuance. */
   billing?: BillingLike;
   telegram?: ToolContext["telegram"];
+  webhooks?: ToolContext["webhooks"];
 }
 
 const NO_AUTH: ToolContext["authorize"] = async () => undefined; // unmetered (stdio / local)
@@ -78,6 +79,7 @@ export function buildServer(core: Core, opts: BuildServerOptions): McpServer {
     clientIp: opts.clientIp,
     billing: opts.billing,
     telegram: opts.telegram,
+    webhooks: opts.webhooks,
   };
 
   registerTools(server, ctx, opts.tiers);
