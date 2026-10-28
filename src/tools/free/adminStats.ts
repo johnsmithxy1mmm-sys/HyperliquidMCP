@@ -28,6 +28,9 @@ function verifyAdminSecret(provided: string): void {
 export const adminStats: ToolDef = {
   name: "hl_admin_stats",
   tier: "free",
+  // Remotely the secret would travel through an agent's context and transcript;
+  // the HTTP server serves the same report at GET /admin/stats instead.
+  localOnly: true,
   title: "Admin usage & revenue stats",
   description:
     "OPERATOR ONLY. Requires `adminSecret` matching the server's HYPERSIGNAL_ADMIN_SECRET env var (disabled if unset). " +

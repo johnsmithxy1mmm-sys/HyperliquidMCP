@@ -2006,3 +2006,16 @@ test("an upstream error does not forward a slice of the upstream response body",
   assert.equal(result.structuredContent.bodyPreview, undefined);
   assert.equal(result.structuredContent.status, 502);
 });
+
+test("hl_admin_stats is not exposed on the remote server, only locally", async () => {
+  const { registerTools } = await import("../src/tools/index.js");
+  const names = (mode: "http" | "stdio") => {
+    const registered: string[] = [];
+    const server = { registerTool: (name: string) => registered.push(name) } as unknown as McpServer;
+    registerTools(server, { mode } as unknown as ToolContext, ["free", "premium"]);
+    return registered;
+  };
+
+  assert.equal(names("http").includes("hl_admin_stats"), false);
+  assert.equal(names("stdio").includes("hl_admin_stats"), true);
+});

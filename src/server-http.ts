@@ -20,6 +20,8 @@ import { ScoreSampler } from "./smartmoney/scoreSampler.js";
 import type { ToolContext } from "./tools/registry.js";
 import { log } from "./logger.js";
 import { TRUST_PROXY_SETTING } from "./core/clientIp.js";
+import { adminStats } from "./tools/free/adminStats.js";
+import { ToolError } from "./core/errors.js";
 
 function envFlag(name: string): boolean {
   return ["1", "true", "yes", "on"].includes((process.env[name] ?? "").trim().toLowerCase());
@@ -116,12 +118,32 @@ async function main(): Promise<void> {
 
   // Always 200 (a Hyperliquid hiccup must not make Fly restart the machine);
   // `engine` shows background work that otherwise fails silently.
+  // Operator report (formerly the hl_admin_stats tool): the secret travels in a
+  // header, not through an agent's context. Hidden entirely when no secret is set.
+  app.get("/admin/stats", ipLimiter(10), async (req: Request, res: Response) => {
+    if (!process.env.HYPERSIGNAL_ADMIN_SECRET) {
+      res.status(404).end();
+      return;
+    }
+    try {
+      const period = typeof req.query.period === "string" ? req.query.period : undefined;
+      const { data } = await adminStats.run({ adminSecret: bearer(req) ?? "", period }, cohortCtx);
+      res.json(data);
+    } catch (err) {
+      const unauthorized = err instanceof ToolError && err.code === "unauthorized";
+      if (!unauthorized) log.error("admin stats failed", { err: String(err) });
+      res.status(unauthorized ? 401 : 500).json({ error: unauthorized ? "unauthorized" : "internal_error" });
+    }
+  });
+
   app.get("/healthz", (_req: Request, res: Response) => {
     res.json({
       ok: true,
       server: SERVER_NAME,
       version: SERVER_VERSION,
       network: config.network,
+      // "ephemeral" means SIGNAL_SIGNING_KEY is unset: signatures stop verifying after a restart.
+      signingKey: core.signer.ephemeral ? "ephemeral" : "persistent",
       engine: {
         ...engine.status(),
         scores: { ...core.store.scores.counts(), abandoned: core.store.scores.abandoned() },

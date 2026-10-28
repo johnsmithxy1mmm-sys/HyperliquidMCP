@@ -93,6 +93,8 @@ export interface ToolDef {
    * a call that would then be refused for lack of identity.
    */
   requiresSubject?: boolean;
+  /** Registered in local stdio mode only, never on the remote HTTP server. */
+  localOnly?: boolean;
   run: (args: Record<string, unknown>, ctx: ToolContext) => Promise<{ summary: string; data: unknown }>;
 }
 
