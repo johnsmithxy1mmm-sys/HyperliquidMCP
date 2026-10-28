@@ -547,22 +547,22 @@ test("spearman detects monotone relationships regardless of linearity", () => {
 
 test("calibrate is honest when evidence is thin and positive when it is strong", () => {
   assert.equal(calibrate([]).verdict, "insufficient_data");
-  assert.equal(calibrate([{ score: 1, forwardPnl: 1 }]).verdict, "insufficient_data");
+  assert.equal(calibrate([{ score: 1, forwardReturn: 1 }]).verdict, "insufficient_data");
 
   // 40 observations where score tracks outcome => should register as positive
-  const strong = Array.from({ length: 40 }, (_, i) => ({ score: i, forwardPnl: i * 100 }));
+  const strong = Array.from({ length: 40 }, (_, i) => ({ score: i, forwardReturn: i * 100 }));
   const good = calibrate(strong);
   assert.equal(good.verdict, "positive");
   assert.ok((good.spearman ?? 0) > 0.9);
   assert.ok((good.pValue ?? 1) < 0.05);
   assert.equal(good.quartiles.length, 4);
   // quartiles must be ordered lowest-score-first with rising outcomes
-  assert.ok(good.quartiles[3].meanForwardPnl > good.quartiles[0].meanForwardPnl);
+  assert.ok(good.quartiles[3].meanForwardReturn > good.quartiles[0].meanForwardReturn);
 
   // score unrelated to outcome => must NOT claim predictive power
   const noise = [3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5, 8, 9, 7, 9, 3, 2, 3, 8, 4,
                  6, 2, 6, 4, 3, 3, 8, 3, 2, 7, 9, 5, 0, 2, 8, 8, 4, 1, 9, 7];
-  const flat = calibrate(noise.map((v, i) => ({ score: i, forwardPnl: v })));
+  const flat = calibrate(noise.map((v, i) => ({ score: i, forwardReturn: v })));
   assert.notEqual(flat.verdict, "positive");
 });
 
@@ -593,7 +593,7 @@ test("spearman p-value matches reference values (not their complement)", () => {
 
 test("calibrate reports an inverted score instead of hiding it as no_evidence", () => {
   // Score perfectly ANTI-correlated with outcome: a finding, not an absence.
-  const inverted = Array.from({ length: 40 }, (_, i) => ({ score: i, forwardPnl: -i * 100 }));
+  const inverted = Array.from({ length: 40 }, (_, i) => ({ score: i, forwardReturn: -i * 100 }));
   const report = calibrate(inverted);
   assert.equal(report.verdict, "inverted");
   assert.ok((report.spearman ?? 0) < -0.9);
@@ -1432,4 +1432,23 @@ test("a paid hl_smart_money_score call does not make the daily calibration sampl
   const sample = await new ScoreSampler(ctx).runOnce(Date.now());
 
   assert.equal(sample.skipped, false, "the sampler, not a caller's query, decides what enters the calibration");
+});
+
+test("calibration outcomes are returns on the sampled account, not raw USD PnL", () => {
+  const store = new ScoreStore(new BetterSqlite3(":memory:"));
+  store.record({ address: "0xbig", score: 90, accountValue: 1_000_000, horizonDays: 30, ts: 1_000 });
+  store.record({ address: "0xsmall", score: 10, accountValue: 10_000, horizonDays: 30, ts: 2_000 });
+  store.record({ address: "0xempty", score: 50, accountValue: 0, horizonDays: 30, ts: 3_000 });
+  for (const row of store.due(10, 365 * 86_400_000)) {
+    const pnl = { "0xbig": 10_000, "0xsmall": 1_000, "0xempty": 500 }[row.address] ?? 0;
+    store.setOutcome(row.id, pnl);
+  }
+
+  // $10k on $1M is 1%; $1k on $10k is 10%. Raw USD would rank the big account first.
+  const outcomes = store.outcomes().sort((a, b) => a.score - b.score);
+
+  assert.deepEqual(outcomes, [
+    { score: 10, forwardReturn: 0.1 },
+    { score: 90, forwardReturn: 0.01 },
+  ]);
 });

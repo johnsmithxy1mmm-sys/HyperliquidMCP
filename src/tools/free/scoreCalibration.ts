@@ -51,7 +51,8 @@ export const scoreCalibration: ToolDef = {
         methodology:
           "Each time a wallet is scored, (address, score) is recorded once per day. After the forward window " +
           "elapses, realized PnL from that wallet's fills over the window is measured (deposit-immune, unlike " +
-          "equity change). Spearman rank correlation is used because only the ordering matters and PnL is " +
+          "equity change) and divided by the account value at sampling time, so account size alone cannot " +
+          "correlate with it. Spearman rank correlation is used because only the ordering matters and returns are " +
           "heavy-tailed. A positive verdict requires n>=30, p<0.05 and rho>0.2.",
       },
     };
