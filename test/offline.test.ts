@@ -42,6 +42,9 @@ import { aggregateByCoin, type CohortAccount } from "../src/hl/whales.js";
 import { clampFee } from "../src/config.js";
 import { TtlLruCache } from "../src/core/cache.js";
 import { InMemorySnapshotStore } from "../src/core/snapshots.js";
+import { AlertEngine } from "../src/alerts/engine.js";
+import type { Warehouse } from "../src/store/warehouse.js";
+import type { SignalSigner } from "../src/signals/signer.js";
 
 test("formatSize rounds to szDecimals", () => {
   assert.equal(formatSize(1.23456789, 3), "1.235");
@@ -1070,4 +1073,25 @@ test("duplicate contract listings collapse to the most liquid copy", async () =>
   // Distinct thresholds are never merged.
   const distinct = dedupeLadderEntries([row("a", 0.5, 1), { ...row("b", 0.4, 1), thresholdUsd: 55000 }]);
   assert.equal(distinct.dropped, 0);
+});
+
+test("alert engine resolves due score outcomes with no alerts and no due signals", async () => {
+  const db = new BetterSqlite3(":memory:");
+  const scores = new ScoreStore(db);
+  const day = 86_400_000;
+  scores.record({ address: "0xabc", score: 50, accountValue: 1, horizonDays: 1, ts: 1000 });
+  // A server nobody has created an alert on: calibration must still accrue.
+  const store = {
+    alerts: { listActive: () => [] },
+    signals: { dueForScoring: () => [] },
+    scores,
+  } as unknown as Warehouse;
+  const hl = {
+    userFillsByTime: async () => [{ closedPnl: "125.5" }, { closedPnl: "-25.5" }],
+  } as unknown as HyperliquidClient;
+  const engine = new AlertEngine(hl, store, {} as SignalSigner, {} as ToolContext);
+
+  await engine.tick(5 * day);
+
+  assert.equal(scores.counts().resolved, 1);
 });
