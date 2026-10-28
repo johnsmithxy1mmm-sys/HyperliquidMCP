@@ -38,6 +38,9 @@ export interface SignalRow {
   scoreSource: ScoreSource | null;
 }
 
+/** Who emitted a signal: the server's own standing alerts, or a customer's. */
+export type SignalOrigin = "house" | "user";
+
 export interface TrackRecord {
   type: string;
   total: number;
@@ -70,6 +73,13 @@ export class SignalStore {
       CREATE INDEX IF NOT EXISTS idx_signals_unscored ON signals(scored_at, ts);
     `);
     this.migrateScoreSource();
+    // Who emitted the signal: the server's own standing alerts ("house") or a
+    // customer's ("user"). Only house signals are published, since a user's
+    // alerts can be tuned to flatter the record.
+    const cols = this.db.prepare(`PRAGMA table_info(signals)`).all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === "origin")) {
+      this.db.exec(`ALTER TABLE signals ADD COLUMN origin TEXT NOT NULL DEFAULT 'user'`);
+    }
   }
 
   /**
@@ -118,14 +128,18 @@ export class SignalStore {
     horizonMinutes: number;
     signature?: string;
     ts?: number;
+    origin?: SignalOrigin;
   }): string {
     const id = randomUUID();
     this.db
       .prepare(
-        `INSERT INTO signals (id, type, coin, direction, ref_px, ts, horizon_minutes, signature)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO signals (id, type, coin, direction, ref_px, ts, horizon_minutes, signature, origin)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(id, input.type, input.coin, input.direction, input.refPx, input.ts ?? Date.now(), input.horizonMinutes, input.signature ?? null);
+      .run(
+        id, input.type, input.coin, input.direction, input.refPx, input.ts ?? Date.now(), input.horizonMinutes,
+        input.signature ?? null, input.origin ?? "user",
+      );
     return id;
   }
 
@@ -164,14 +178,17 @@ export class SignalStore {
       .run(scoredAt, id);
   }
 
-  trackRecord(type?: string): TrackRecord[] {
-    // Bounded to the most recent 10k signals so this stays fast after months
-    // of accumulation (the full history remains in the table).
-    const recent = `SELECT * FROM (SELECT * FROM signals ORDER BY ts DESC LIMIT 10000)`;
+  trackRecord(type?: string, origin?: SignalOrigin): TrackRecord[] {
+    // Bounded to the most recent 10k signals (of that origin) so this stays
+    // fast after months of accumulation (the full history remains in the table).
+    const recent = origin
+      ? `SELECT * FROM (SELECT * FROM signals WHERE origin = ? ORDER BY ts DESC LIMIT 10000)`
+      : `SELECT * FROM (SELECT * FROM signals ORDER BY ts DESC LIMIT 10000)`;
+    const params: string[] = origin ? [origin] : [];
     const rows = (
       type
-        ? this.db.prepare(`${recent} WHERE type = ?`).all(type)
-        : this.db.prepare(recent).all()
+        ? this.db.prepare(`${recent} WHERE type = ?`).all(...params, type)
+        : this.db.prepare(recent).all(...params)
     ) as RawSignal[];
     const byType = new Map<string, SignalRow[]>();
     for (const r of rows.map(mapRow)) {

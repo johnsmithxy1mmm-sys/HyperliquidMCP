@@ -2127,3 +2127,126 @@ test("a stale auto cohort is served, flagged, when there is no other source", as
   assert.equal(cohort.source, "auto_stale");
   assert.equal(cohort.addresses.length, 1);
 });
+
+test("the public track record counts only the server's own (house) signals", async () => {
+  const { SignalStore } = await import("../src/store/signalStore.js");
+  const store = new SignalStore(new BetterSqlite3(":memory:"));
+  const house = store.record({ type: "funding_apr", coin: "BTC", direction: "short", refPx: 100, horizonMinutes: 1440, origin: "house" });
+  const user = store.record({ type: "funding_apr", coin: "ETH", direction: "long", refPx: 100, horizonMinutes: 1440 });
+  store.setScore(house, 101, -0.01, 2_000, "live");
+  store.setScore(user, 99, 0.05, 2_000, "live");
+
+  // A user's alerts can be tuned to flatter the record; the server's cannot.
+  const [record] = store.trackRecord(undefined, "house");
+
+  assert.equal(record.total, 1);
+  assert.equal(record.scored, 1);
+});
+
+test("a house alert firing records its signal as house", async () => {
+  const { HOUSE_SUBJECT } = await import("../src/alerts/house.js");
+  const alert: AlertRecord = {
+    id: "h", subject: HOUSE_SUBJECT, type: "price_move", params: { coin: "BTC", movePct: 0.01, windowMinutes: 60 },
+    enabled: true, cooldownMinutes: 60, lastFiredAt: null, lastState: null, createdAt: 0,
+  };
+  const recorded: Array<{ origin?: string }> = [];
+  const store = {
+    alerts: { listActive: () => [alert], updateState: () => undefined, recordFired: () => undefined },
+    signals: { dueForScoring: () => [], record: (s: { origin?: string }) => recorded.push(s) },
+    snapshots: { record: () => undefined, nearest: () => ({ value: { px: 59_000 }, at: 0 }) },
+    scores: { due: () => [] },
+  } as unknown as Warehouse;
+  const hl = { metaAndAssetCtxs: (tradingCtx(5) as unknown as { hl: HyperliquidClient }).hl.metaAndAssetCtxs } as unknown as HyperliquidClient;
+  const signer = { sign: () => ({ signature: "sig" }) } as unknown as SignalSigner;
+
+  await new AlertEngine(hl, store, signer, { store, hl } as unknown as ToolContext).tick(1_000_000);
+
+  assert.deepEqual(recorded.map((s) => s.origin), ["house"]);
+});
+
+test("ensureHouseAlerts keeps funding alerts on the top 10 coins by open interest plus BTC/ETH whale flips", async () => {
+  const { ensureHouseAlerts, HOUSE_SUBJECT } = await import("../src/alerts/house.js");
+  const { AlertStore } = await import("../src/store/alertStore.js");
+  const alerts = new AlertStore(new BetterSqlite3(":memory:"));
+  const market = (coins: string[]) => ({
+    metaAndAssetCtxs: async () => [
+      { universe: coins.map((name) => ({ name, szDecimals: 2, maxLeverage: 10 })) },
+      // Open interest falls with position in the list, so the first ten are the top ten.
+      coins.map((_, i) => ({ markPx: "10", prevDayPx: "10", funding: "0", oraclePx: "10", openInterest: String(1000 - i), dayNtlVlm: "0" })),
+    ],
+  }) as unknown as HyperliquidClient;
+  const coins = ["BTC", "ETH", "SOL", "XRP", "DOGE", "HYPE", "SUI", "AVAX", "LINK", "BNB", "LTC", "ADA"];
+
+  await ensureHouseAlerts(market(coins), alerts);
+  // ADA overtakes BNB: BNB's funding alert goes, ADA's arrives, nothing is duplicated.
+  await ensureHouseAlerts(market([...coins.slice(0, 9), "ADA", "LTC", "BNB"]), alerts);
+
+  const house = alerts.list(HOUSE_SUBJECT);
+  const funding = house.filter((a) => a.type === "funding_apr").map((a) => a.params.coin).sort();
+  const flips = house.filter((a) => a.type === "whale_net_flip").map((a) => a.params.coin).sort();
+  assert.deepEqual(funding, [...coins.slice(0, 9), "ADA"].sort());
+  assert.deepEqual(flips, ["BTC", "ETH"]);
+});
+
+test("the public proof publishes house signals, calibration and the signing key", async () => {
+  const { buildPublicProof } = await import("../src/public/proof.js");
+  const origins: Array<string | undefined> = [];
+  const store = {
+    signals: {
+      trackRecord: (_type?: string, origin?: string) => {
+        origins.push(origin);
+        return [{ type: "funding_apr", total: 4, scored: 3, wins: 2, hitRatePct: 66.67, avgReturnPct: 0.4, medianReturnPct: 0.3, excludedStale: 0 }];
+      },
+    },
+    scores: { outcomes: () => [], counts: () => ({ total: 10, resolved: 0, pending: 10 }), abandoned: () => 0 },
+  } as unknown as Warehouse;
+  const signer = { publicKey: () => "MCowBQYDK2VwAyEA", ephemeral: false } as unknown as SignalSigner;
+
+  const proof = buildPublicProof(store, signer, "1.7.0", 5_000);
+
+  assert.deepEqual(origins, ["house"]);
+  assert.equal(proof.houseSignals[0].hitRatePct, 66.67);
+  assert.equal(proof.calibration.verdict, "insufficient_data");
+  assert.equal(proof.signing.publicKey, "MCowBQYDK2VwAyEA");
+});
+
+test("the public track record page escapes what it renders", async () => {
+  const { renderProofHtml } = await import("../src/public/proof.js");
+  const html = renderProofHtml({
+    server: "hypersignal-mcp", version: "1.7.0", generatedAt: 0,
+    signing: { alg: "ed25519", publicKey: "key<script>", persistent: true },
+    calibration: { n: 0, spearman: null, pValue: null, quartiles: [], verdict: "insufficient_data", observations: { total: 1, resolved: 0, pending: 1, abandoned: 0 } },
+    houseSignals: [{ type: "<img onerror=x>", total: 1, scored: 0, wins: 0, hitRatePct: 0, avgReturnPct: 0, medianReturnPct: 0, excludedStale: 0 }],
+  });
+
+  assert.ok(!html.includes("<script>") && !html.includes("<img"), "every value is HTML-escaped");
+  assert.ok(html.includes("insufficient_data"));
+});
+
+test("the server exposes proof resources and briefing prompts to MCP clients", async () => {
+  const { registerResourcesAndPrompts } = await import("../src/mcp/resourcesAndPrompts.js");
+  const resources = new Map<string, (uri: URL) => Promise<{ contents: Array<{ text: string }> }>>();
+  const prompts = new Map<string, (args: Record<string, string>) => Promise<{ messages: Array<{ content: { text: string } }> }>>();
+  const server = {
+    registerResource: (name: string, _uri: string, _meta: unknown, read: (uri: URL) => Promise<{ contents: Array<{ text: string }> }>) =>
+      resources.set(name, read),
+    registerPrompt: (name: string, _cfg: unknown, cb: (args: Record<string, string>) => Promise<{ messages: Array<{ content: { text: string } }> }>) =>
+      prompts.set(name, cb),
+  } as unknown as McpServer;
+  const ctx = {
+    store: {
+      signals: { trackRecord: () => [{ type: "funding_apr", total: 2, scored: 1, wins: 1, hitRatePct: 100, avgReturnPct: 1, medianReturnPct: 1, excludedStale: 0 }] },
+      scores: { outcomes: () => [], counts: () => ({ total: 0, resolved: 0, pending: 0 }), abandoned: () => 0 },
+    },
+    signer: { publicKey: () => "PUBKEY", ephemeral: false },
+  } as unknown as ToolContext;
+
+  registerResourcesAndPrompts(server, ctx, "1.7.0");
+
+  assert.deepEqual([...resources.keys()].sort(), ["about", "calibration", "signal-pubkey", "track-record"]);
+  assert.deepEqual([...prompts.keys()].sort(), ["funding_carry_scan", "wallet_risk_check", "whale_briefing"]);
+  const record = JSON.parse((await resources.get("track-record")!(new URL("hypersignal://track-record"))).contents[0].text);
+  assert.equal(record[0].hitRatePct, 100);
+  const briefing = (await prompts.get("whale_briefing")!({ coin: "ETH" })).messages[0].content.text;
+  assert.ok(briefing.includes("hl_whale_positions") && briefing.includes("ETH"));
+});

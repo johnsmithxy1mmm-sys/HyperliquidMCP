@@ -21,6 +21,8 @@ import type { ToolContext } from "./tools/registry.js";
 import { log } from "./logger.js";
 import { TRUST_PROXY_SETTING } from "./core/clientIp.js";
 import { adminStats } from "./tools/free/adminStats.js";
+import { ensureHouseAlerts } from "./alerts/house.js";
+import { buildPublicProof, renderProofHtml } from "./public/proof.js";
 import { ToolError } from "./core/errors.js";
 
 function envFlag(name: string): boolean {
@@ -70,6 +72,14 @@ async function main(): Promise<void> {
   const engine = new AlertEngine(core.hl, core.store, core.signer, cohortCtx);
   engine.start();
 
+  // The server's own alerts keep the published track record growing without customers.
+  const refreshHouseAlerts = () =>
+    ensureHouseAlerts(core.hl, core.store.alerts).catch((err) =>
+      log.warn("house alerts refresh failed", { err: String(err) }),
+    );
+  void refreshHouseAlerts();
+  setInterval(() => void refreshHouseAlerts(), 24 * 3_600_000).unref();
+
   // Samples the server-selected cohort daily so the score calibration keeps
   // accumulating evidence instead of waiting on customer traffic.
   new ScoreSampler(cohortCtx).start();
@@ -118,6 +128,14 @@ async function main(): Promise<void> {
 
   // Always 200 (a Hyperliquid hiccup must not make Fly restart the machine);
   // `engine` shows background work that otherwise fails silently.
+  // Public, key-free proof: house-signal track record, calibration, signing key.
+  app.get("/track-record.json", ipLimiter(60), (_req: Request, res: Response) => {
+    res.json(buildPublicProof(core.store, core.signer, SERVER_VERSION));
+  });
+  app.get("/track-record", ipLimiter(60), (_req: Request, res: Response) => {
+    res.type("html").send(renderProofHtml(buildPublicProof(core.store, core.signer, SERVER_VERSION)));
+  });
+
   // Operator report (formerly the hl_admin_stats tool): the secret travels in a
   // header, not through an agent's context. Hidden entirely when no secret is set.
   app.get("/admin/stats", ipLimiter(10), async (req: Request, res: Response) => {
@@ -159,7 +177,7 @@ async function main(): Promise<void> {
       version: SERVER_VERSION,
       status: "ok",
       description: "Monetized MCP server for Hyperliquid analytics & signals.",
-      endpoints: { health: "GET /healthz", mcp: `POST ${config.httpPath}` },
+      endpoints: { health: "GET /healthz", mcp: `POST ${config.httpPath}`, trackRecord: "GET /track-record" },
       hint: "Connect an MCP client to the /mcp endpoint (Streamable HTTP). Free tools need no key; premium tools require X-API-Key or x402.",
     });
   });

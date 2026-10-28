@@ -10,12 +10,13 @@ import type { SnapshotStore } from "./core/snapshots.js";
 import { Warehouse } from "./store/warehouse.js";
 import { SignalSigner } from "./signals/signer.js";
 import { registerTools } from "./tools/index.js";
+import { registerResourcesAndPrompts } from "./mcp/resourcesAndPrompts.js";
 import type { ToolContext, Tier, BillingLike } from "./tools/registry.js";
 import type { TradingService } from "./trading/exchange.js";
 import type { ExecutionRunner } from "./execution/runner.js";
 
 export const SERVER_NAME = "hypersignal-mcp";
-export const SERVER_VERSION = "1.6.9";
+export const SERVER_VERSION = "1.7.0";
 
 /** Long-lived singletons shared across requests. */
 export class Core {
@@ -78,5 +79,6 @@ export function buildServer(core: Core, opts: BuildServerOptions): McpServer {
   };
 
   registerTools(server, ctx, opts.tiers);
+  registerResourcesAndPrompts(server, ctx, SERVER_VERSION);
   return server;
 }
