@@ -23,4 +23,6 @@ COPY .env.example ./.env.example
 RUN mkdir -p /app/data
 EXPOSE 8080
 # Default to the remote HTTP server (free + premium; never trading).
-CMD ["node", "dist/server-http.js"]
+# Starts as root only to hand the data volume (Fly mounts it root-owned) to the
+# unprivileged `node` user, then runs the server as `node`.
+CMD ["sh", "-c", "chown -R node:node /app/data && exec setpriv --reuid=node --regid=node --init-groups node dist/server-http.js"]
