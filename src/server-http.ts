@@ -21,6 +21,7 @@ import type { ToolContext } from "./tools/registry.js";
 import { log } from "./logger.js";
 import { TRUST_PROXY_SETTING } from "./core/clientIp.js";
 import { adminStats } from "./tools/free/adminStats.js";
+import { ensureHouseAlerts } from "./alerts/house.js";
 import { ToolError } from "./core/errors.js";
 
 function envFlag(name: string): boolean {
@@ -69,6 +70,14 @@ async function main(): Promise<void> {
   const cohortCtx = { config, hl: core.hl, store: core.store } as unknown as ToolContext;
   const engine = new AlertEngine(core.hl, core.store, core.signer, cohortCtx);
   engine.start();
+
+  // The server's own alerts keep the published track record growing without customers.
+  const refreshHouseAlerts = () =>
+    ensureHouseAlerts(core.hl, core.store.alerts).catch((err) =>
+      log.warn("house alerts refresh failed", { err: String(err) }),
+    );
+  void refreshHouseAlerts();
+  setInterval(() => void refreshHouseAlerts(), 24 * 3_600_000).unref();
 
   // Samples the server-selected cohort daily so the score calibration keeps
   // accumulating evidence instead of waiting on customer traffic.

@@ -2127,3 +2127,63 @@ test("a stale auto cohort is served, flagged, when there is no other source", as
   assert.equal(cohort.source, "auto_stale");
   assert.equal(cohort.addresses.length, 1);
 });
+
+test("the public track record counts only the server's own (house) signals", async () => {
+  const { SignalStore } = await import("../src/store/signalStore.js");
+  const store = new SignalStore(new BetterSqlite3(":memory:"));
+  const house = store.record({ type: "funding_apr", coin: "BTC", direction: "short", refPx: 100, horizonMinutes: 1440, origin: "house" });
+  const user = store.record({ type: "funding_apr", coin: "ETH", direction: "long", refPx: 100, horizonMinutes: 1440 });
+  store.setScore(house, 101, -0.01, 2_000, "live");
+  store.setScore(user, 99, 0.05, 2_000, "live");
+
+  // A user's alerts can be tuned to flatter the record; the server's cannot.
+  const [record] = store.trackRecord(undefined, "house");
+
+  assert.equal(record.total, 1);
+  assert.equal(record.scored, 1);
+});
+
+test("a house alert firing records its signal as house", async () => {
+  const { HOUSE_SUBJECT } = await import("../src/alerts/house.js");
+  const alert: AlertRecord = {
+    id: "h", subject: HOUSE_SUBJECT, type: "price_move", params: { coin: "BTC", movePct: 0.01, windowMinutes: 60 },
+    enabled: true, cooldownMinutes: 60, lastFiredAt: null, lastState: null, createdAt: 0,
+  };
+  const recorded: Array<{ origin?: string }> = [];
+  const store = {
+    alerts: { listActive: () => [alert], updateState: () => undefined, recordFired: () => undefined },
+    signals: { dueForScoring: () => [], record: (s: { origin?: string }) => recorded.push(s) },
+    snapshots: { record: () => undefined, nearest: () => ({ value: { px: 59_000 }, at: 0 }) },
+    scores: { due: () => [] },
+  } as unknown as Warehouse;
+  const hl = { metaAndAssetCtxs: (tradingCtx(5) as unknown as { hl: HyperliquidClient }).hl.metaAndAssetCtxs } as unknown as HyperliquidClient;
+  const signer = { sign: () => ({ signature: "sig" }) } as unknown as SignalSigner;
+
+  await new AlertEngine(hl, store, signer, { store, hl } as unknown as ToolContext).tick(1_000_000);
+
+  assert.deepEqual(recorded.map((s) => s.origin), ["house"]);
+});
+
+test("ensureHouseAlerts keeps funding alerts on the top 10 coins by open interest plus BTC/ETH whale flips", async () => {
+  const { ensureHouseAlerts, HOUSE_SUBJECT } = await import("../src/alerts/house.js");
+  const { AlertStore } = await import("../src/store/alertStore.js");
+  const alerts = new AlertStore(new BetterSqlite3(":memory:"));
+  const market = (coins: string[]) => ({
+    metaAndAssetCtxs: async () => [
+      { universe: coins.map((name) => ({ name, szDecimals: 2, maxLeverage: 10 })) },
+      // Open interest falls with position in the list, so the first ten are the top ten.
+      coins.map((_, i) => ({ markPx: "10", prevDayPx: "10", funding: "0", oraclePx: "10", openInterest: String(1000 - i), dayNtlVlm: "0" })),
+    ],
+  }) as unknown as HyperliquidClient;
+  const coins = ["BTC", "ETH", "SOL", "XRP", "DOGE", "HYPE", "SUI", "AVAX", "LINK", "BNB", "LTC", "ADA"];
+
+  await ensureHouseAlerts(market(coins), alerts);
+  // ADA overtakes BNB: BNB's funding alert goes, ADA's arrives, nothing is duplicated.
+  await ensureHouseAlerts(market([...coins.slice(0, 9), "ADA", "LTC", "BNB"]), alerts);
+
+  const house = alerts.list(HOUSE_SUBJECT);
+  const funding = house.filter((a) => a.type === "funding_apr").map((a) => a.params.coin).sort();
+  const flips = house.filter((a) => a.type === "whale_net_flip").map((a) => a.params.coin).sort();
+  assert.deepEqual(funding, [...coins.slice(0, 9), "ADA"].sort());
+  assert.deepEqual(flips, ["BTC", "ETH"]);
+});

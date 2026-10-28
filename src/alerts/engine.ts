@@ -17,6 +17,7 @@ import { evaluateAlert, type EvalInputs } from "./evaluate.js";
 import type { ToolContext } from "../tools/registry.js";
 import { shortHash } from "../core/format.js";
 import { log } from "../logger.js";
+import { HOUSE_SUBJECT } from "./house.js";
 
 const PRICE_NS = "alertPrice";
 
@@ -131,6 +132,7 @@ export class AlertEngine {
               horizonMinutes: 1440,
               signature,
               ts: now,
+              origin: a.subject === HOUSE_SUBJECT ? "house" : "user",
             });
           }
           this.store.alerts.recordFired(a.id, a.subject, now, res.message, {
