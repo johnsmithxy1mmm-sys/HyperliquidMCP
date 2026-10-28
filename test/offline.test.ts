@@ -58,7 +58,7 @@ import { requestFreeKey } from "../src/tools/free/requestFreeKey.js";
 import { whaleFlowAlerts } from "../src/tools/premium/whaleFlowAlerts.js";
 import { whalePositions } from "../src/tools/premium/whalePositions.js";
 import { smartMoneyScore } from "../src/tools/premium/smartMoney.js";
-import { twapOrder, cancelExecution } from "../src/tools/trading/execution.js";
+import { twapOrder, cancelExecution, copyWallet } from "../src/tools/trading/execution.js";
 import { ExecutionRunner } from "../src/execution/runner.js";
 import { traderReport } from "../src/tools/premium/traderReport.js";
 import { hip3Analytics } from "../src/tools/premium/hip3Analytics.js";
@@ -921,7 +921,7 @@ test("closePosition refuses submitting against a foreign address", async () => {
   await assert.rejects(
     // foreign address + confirm + live mode must be rejected BEFORE any network I/O
     svc.closePosition("BTC", { confirm: true, dryRun: false }, "0x1111111111111111111111111111111111111111"),
-    /agent wallet's own positions/,
+    /trading account's own positions/,
   );
 });
 
@@ -1913,4 +1913,55 @@ test("x402 caps how many unsettled payments one payer may hold", async () => {
   }
 
   assert.deepEqual(results.map((r) => r.reason), [undefined, undefined, undefined, "too_many_pending_payments"]);
+});
+
+/** An agent (API) wallet trading for a master account that holds 0.1 BTC; the agent itself holds nothing. */
+function apiWalletSetup() {
+  const master = "0x00000000000000000000000000000000000000aa";
+  const target = "0x00000000000000000000000000000000000000bb";
+  const empty = {
+    marginSummary: { accountValue: "0", totalNtlPos: "0", totalRawUsd: "0", totalMarginUsed: "0" },
+    crossMarginSummary: { accountValue: "0", totalNtlPos: "0", totalRawUsd: "0", totalMarginUsed: "0" },
+    crossMaintenanceMarginUsed: "0", withdrawable: "0", assetPositions: [],
+  };
+  const hl = {
+    ...(tradingCtx(5) as unknown as { hl: object }).hl,
+    clearinghouseState: async (address: string) =>
+      [master, target].includes(address.toLowerCase()) ? walletWithBtc(0.1) : empty,
+  } as unknown as HyperliquidClient;
+  const config = {
+    tradingEnabled: false,
+    agentPrivateKey: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80", // Hardhat #0 (test-only)
+    accountAddress: master,
+    builder: { address: undefined, feeTenthsBps: 5 },
+    network: "testnet",
+    maxOrderNotionalUsd: 10_000,
+  } as unknown as Config;
+  return { master, target, hl, config, trading: new TradingService(config, hl) };
+}
+
+test("closePosition reads the master account an API wallet trades for", async () => {
+  const { trading } = apiWalletSetup();
+
+  const res = await trading.closePosition("BTC", { confirm: true, dryRun: true });
+
+  assert.equal(res.mode, "dry_run");
+});
+
+test("closePosition accepts the master account's address when submitting", async () => {
+  const { trading, master } = apiWalletSetup();
+
+  // Trading is disabled here, so a refusal for any other reason surfaces as "blocked".
+  const res = await trading.closePosition("BTC", { confirm: true, dryRun: false }, master);
+
+  assert.equal(res.mode, "blocked");
+});
+
+test("hl_copy_wallet sizes from the master account's equity, not the empty agent wallet", async () => {
+  const { hl, config, trading, target } = apiWalletSetup();
+  const ctx = { hl, config, trading, execution: {}, mode: "stdio" } as unknown as ToolContext;
+
+  const { data } = await copyWallet.run({ targetAddress: target }, ctx);
+
+  assert.equal((data as { myEquityUsd: number }).myEquityUsd, 1_000_000);
 });
