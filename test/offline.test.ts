@@ -1601,3 +1601,28 @@ test("Polymarket 'exceed / fall below ... by <date>' resolves on a touch, not at
   // "be above ... on <date>" is still a reading at the date.
   assert.equal(parseThresholdMarket("Will Bitcoin be above $100k on December 31?")?.mode, "above");
 });
+
+test("fundingHistory pages past Hyperliquid's 500-entry response cap", async () => {
+  const HOUR = 3_600_000;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (_url: unknown, init?: { body?: unknown }) => {
+    const { startTime } = JSON.parse(String(init?.body)) as { startTime: number };
+    // 30 days of hourly funding = 720 entries; each response holds at most 500.
+    const entries = [];
+    for (let t = Math.ceil(startTime / HOUR) * HOUR; t < 720 * HOUR && entries.length < 500; t += HOUR) {
+      entries.push({ coin: "BTC", fundingRate: "0.0000125", premium: "0", time: t });
+    }
+    return new Response(JSON.stringify(entries), { status: 200 });
+  }) as typeof fetch;
+  let history: unknown[] = [];
+  try {
+    const hl = new HyperliquidClient({
+      infoBaseUrl: "http://hl.test/info", requestTimeoutMs: 1000, maxRetries: 0, rateWeightPerMin: 100_000,
+    } as unknown as Config);
+    history = await hl.fundingHistory("BTC", 0, 720 * HOUR);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  assert.equal(history.length, 720);
+});
