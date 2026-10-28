@@ -57,6 +57,7 @@ import { ipBucket, TRUST_PROXY_SETTING } from "../src/core/clientIp.js";
 import { requestFreeKey } from "../src/tools/free/requestFreeKey.js";
 import { whaleFlowAlerts } from "../src/tools/premium/whaleFlowAlerts.js";
 import { whalePositions } from "../src/tools/premium/whalePositions.js";
+import { smartMoneyScore } from "../src/tools/premium/smartMoney.js";
 
 test("formatSize rounds to szDecimals", () => {
   assert.equal(formatSize(1.23456789, 3), "1.235");
@@ -1408,4 +1409,27 @@ test("hyperliquid client charges the documented info request weights", async () 
 
   // Hyperliquid docs: most info requests weigh 20; fill endpoints add 1 per 20 items returned.
   assert.deepEqual(charged, [20, 20, 2]);
+});
+
+test("a paid hl_smart_money_score call does not make the daily calibration sample skip", async () => {
+  const scores = new ScoreStore(new BetterSqlite3(":memory:"));
+  const cohortAddresses = [
+    "0x5555555555555555555555555555555555555555",
+    "0x6666666666666666666666666666666666666666",
+    "0x7777777777777777777777777777777777777777",
+  ];
+  const ctx = {
+    config: { whaleAddresses: cohortAddresses, leaderboardUrl: undefined, requestTimeoutMs: 1000 },
+    hl: {
+      userFillsByTime: async () => [],
+      clearinghouseState: async () => walletWithBtc(1),
+    },
+    store: { cohort: { get: () => null }, scores },
+  } as unknown as ToolContext;
+
+  // A caller asks for the top 3 over a 7-day lookback.
+  await smartMoneyScore.run({ topN: 3, lookbackDays: 7 }, ctx);
+  const sample = await new ScoreSampler(ctx).runOnce(Date.now());
+
+  assert.equal(sample.skipped, false, "the sampler, not a caller's query, decides what enters the calibration");
 });
