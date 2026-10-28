@@ -38,6 +38,7 @@ export const hip3Analytics: ToolDef = {
     hip3MarketCount: z.number(),
     dexsScanned: z.array(z.string()),
     dexsFailed: z.array(z.string()),
+    dexsNotScanned: z.array(z.string()),
     markets: z.array(z.record(z.any())),
     nextOffset: z.number().nullable(),
     disclaimer: z.string(),
@@ -47,7 +48,7 @@ export const hip3Analytics: ToolDef = {
     const dexFilter = (args.dex as string | undefined)?.toLowerCase();
     const spotRefs = (args.spotRefs as Record<string, number> | undefined) ?? {};
 
-    const { rows, dexsScanned, dexsFailed } = await collectHip3Rows(ctx, dexFilter);
+    const { rows, dexsScanned, dexsFailed, dexsNotScanned } = await collectHip3Rows(ctx, dexFilter);
 
     const markets = rows.map((r) => {
       const dex = r.coin.includes(":") ? r.coin.split(":")[0] : null;
@@ -82,6 +83,7 @@ export const hip3Analytics: ToolDef = {
         hip3MarketCount: markets.length,
         dexsScanned,
         dexsFailed,
+        dexsNotScanned,
         markets: page.items,
         nextOffset: page.nextOffset,
         disclaimer: ANALYTICS_DISCLAIMER,
@@ -93,7 +95,7 @@ export const hip3Analytics: ToolDef = {
 async function collectHip3Rows(
   ctx: ToolContext,
   dexFilter: string | undefined,
-): Promise<{ rows: MarketRow[]; dexsScanned: string[]; dexsFailed: string[] }> {
+): Promise<{ rows: MarketRow[]; dexsScanned: string[]; dexsFailed: string[]; dexsNotScanned: string[] }> {
   const byCoin = new Map<string, MarketRow>();
 
   // 1) ":"-named rows already visible in the main universe.
@@ -134,5 +136,6 @@ async function collectHip3Rows(
 
   let rows = [...byCoin.values()];
   if (dexFilter) rows = rows.filter((r) => r.coin.toLowerCase().startsWith(`${dexFilter}:`));
-  return { rows, dexsScanned, dexsFailed };
+  // Dexs past MAX_DEXS are named, not silently dropped: pass `dex` to scan one.
+  return { rows, dexsScanned, dexsFailed, dexsNotScanned: dexNames.slice(MAX_DEXS) };
 }

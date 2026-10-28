@@ -60,6 +60,8 @@ import { whalePositions } from "../src/tools/premium/whalePositions.js";
 import { smartMoneyScore } from "../src/tools/premium/smartMoney.js";
 import { twapOrder, cancelExecution } from "../src/tools/trading/execution.js";
 import { ExecutionRunner } from "../src/execution/runner.js";
+import { traderReport } from "../src/tools/premium/traderReport.js";
+import { hip3Analytics } from "../src/tools/premium/hip3Analytics.js";
 
 test("formatSize rounds to szDecimals", () => {
   assert.equal(formatSize(1.23456789, 3), "1.235");
@@ -1625,4 +1627,30 @@ test("fundingHistory pages past Hyperliquid's 500-entry response cap", async () 
   }
 
   assert.equal(history.length, 720);
+});
+
+test("hl_trader_report flags history cut at Hyperliquid's 10,000 most recent fills", async () => {
+  const fills = Array.from({ length: 10_000 }, (_, i) => ({
+    coin: "BTC", px: "60000", sz: "0.01", side: "B", time: i, closedPnl: i % 2 ? "5" : "-3", fee: "0.1", dir: "Close Long",
+  }));
+  const ctx = { hl: { userFillsByTime: async () => fills } } as unknown as ToolContext;
+
+  const { data } = await traderReport.run({ address: "0x8888888888888888888888888888888888888888" }, ctx);
+
+  assert.equal((data as { historyTruncated: boolean }).historyTruncated, true);
+});
+
+test("hl_hip3_analytics lists the builder dexs it did not scan", async () => {
+  const dexs = Array.from({ length: 12 }, (_, i) => ({ name: `dex${i}` }));
+  const ctx = {
+    hl: {
+      metaAndAssetCtxs: async () => [{ universe: [] }, []],
+      perpDexs: async () => [null, ...dexs],
+      metaAndAssetCtxsForDex: async () => [{ universe: [] }, []],
+    },
+  } as unknown as ToolContext;
+
+  const { data } = await hip3Analytics.run({}, ctx);
+
+  assert.deepEqual((data as { dexsNotScanned: string[] }).dexsNotScanned, ["dex10", "dex11"]);
 });

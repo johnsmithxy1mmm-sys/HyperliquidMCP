@@ -30,6 +30,8 @@ const WEIGHT_INFO = 20;
 const ITEMS_PER_WEIGHT = 20;
 const CANDLES_PER_WEIGHT = 60;
 
+/** Hyperliquid serves only a user's 10,000 most recent fills, however they are paged. */
+export const MAX_AVAILABLE_FILLS = 10_000;
 const TIME_RANGE_PAGE_LIMIT = 500;
 const FUNDING_MAX_PAGES = 10;
 const FILLS_PAGE_LIMIT = 2000;
