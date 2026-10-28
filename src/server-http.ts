@@ -65,7 +65,8 @@ async function main(): Promise<void> {
 
   // Standing-alert engine: evaluates alerts server-side and builds the track record.
   const cohortCtx = { config, hl: core.hl, store: core.store } as unknown as ToolContext;
-  new AlertEngine(core.hl, core.store, core.signer, cohortCtx).start();
+  const engine = new AlertEngine(core.hl, core.store, core.signer, cohortCtx);
+  engine.start();
 
   // Samples the server-selected cohort daily so the score calibration keeps
   // accumulating evidence instead of waiting on customer traffic.
@@ -113,8 +114,19 @@ async function main(): Promise<void> {
   const maxPerMinute = Math.max(1, Number(process.env.HTTP_RATE_LIMIT_PER_MIN ?? 120) || 120);
   app.use(config.httpPath, ipLimiter(maxPerMinute));
 
+  // Always 200 (a Hyperliquid hiccup must not make Fly restart the machine);
+  // `engine` shows background work that otherwise fails silently.
   app.get("/healthz", (_req: Request, res: Response) => {
-    res.json({ ok: true, server: SERVER_NAME, version: SERVER_VERSION, network: config.network });
+    res.json({
+      ok: true,
+      server: SERVER_NAME,
+      version: SERVER_VERSION,
+      network: config.network,
+      engine: {
+        ...engine.status(),
+        scores: { ...core.store.scores.counts(), abandoned: core.store.scores.abandoned() },
+      },
+    });
   });
 
   // Friendly landing on the root so platform health checks / browsers get a

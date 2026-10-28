@@ -30,6 +30,8 @@ const MAX_SCORING_LAG_MS = 7 * 86_400_000;
 export class AlertEngine {
   private timer: NodeJS.Timeout | undefined;
   private running = false;
+  private lastTickAt: number | null = null;
+  private lastTickError: string | null = null;
 
   constructor(
     private readonly hl: HyperliquidClient,
@@ -55,11 +57,17 @@ export class AlertEngine {
     this.timer = undefined;
   }
 
+  /** When the last tick finished and why it failed, for /healthz: tick() swallows its errors. */
+  status(): { lastTickAt: number | null; lastTickError: string | null } {
+    return { lastTickAt: this.lastTickAt, lastTickError: this.lastTickError };
+  }
+
   /** One evaluation pass. Exposed for manual poll/testing. Returns fired count. */
   async tick(now = Date.now()): Promise<number> {
     if (this.running) return 0;
     this.running = true;
     try {
+      this.lastTickError = null;
       const alerts = this.store.alerts.listActive();
       // Signals must keep getting scored even when every alert has been
       // deleted — otherwise the track record freezes. Only skip the network
@@ -137,9 +145,11 @@ export class AlertEngine {
       await this.resolveDueScoreOutcomes(now);
       return fired;
     } catch (err) {
-      log.warn("alert tick failed", { err: err instanceof Error ? err.message : String(err) });
+      this.lastTickError = err instanceof Error ? err.message : String(err);
+      log.warn("alert tick failed", { err: this.lastTickError });
       return 0;
     } finally {
+      this.lastTickAt = now;
       this.running = false;
     }
   }

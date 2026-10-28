@@ -1340,3 +1340,26 @@ test("hl_whale_positions gives no 1h change for a partially loaded cohort", asyn
   assert.equal(btc?.change1hUsd, null);
   assert.equal((data as { walletsRequested: number }).walletsRequested, 2);
 });
+
+test("alert engine status shows when the last tick ran and why it failed", async () => {
+  let failing = true;
+  const store = {
+    alerts: { listActive: () => [] },
+    signals: { dueForScoring: () => [] },
+    scores: {
+      due: () => {
+        if (failing) throw new Error("database is locked");
+        return [];
+      },
+    },
+  } as unknown as Warehouse;
+  const engine = new AlertEngine({} as HyperliquidClient, store, {} as SignalSigner, {} as ToolContext);
+
+  await engine.tick(1_000);
+  const afterFailure = engine.status();
+  failing = false;
+  await engine.tick(2_000);
+
+  assert.deepEqual(afterFailure, { lastTickAt: 1_000, lastTickError: "database is locked" });
+  assert.deepEqual(engine.status(), { lastTickAt: 2_000, lastTickError: null });
+});
