@@ -34,8 +34,13 @@ export class TtlLruCache {
   }
 
   set<T>(key: string, value: T, ttlMs: number): void {
+    // Expired entries are otherwise only dropped when read again, and keys like
+    // fills-by-start-time never are: large payloads piled up to the entry cap
+    // and ran the heap out of memory.
+    const now = Date.now();
+    for (const [k, e] of this.store) if (e.expiresAt <= now) this.store.delete(k);
     if (this.store.has(key)) this.store.delete(key);
-    this.store.set(key, { value, expiresAt: Date.now() + ttlMs });
+    this.store.set(key, { value, expiresAt: now + ttlMs });
     if (this.store.size > this.max) {
       const oldest = this.store.keys().next().value;
       if (oldest !== undefined) this.store.delete(oldest);
