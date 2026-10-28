@@ -34,7 +34,7 @@ import { placeOrder } from "./trading/placeOrder.js";
 import { cancelOrder } from "./trading/cancelOrder.js";
 import { closePosition } from "./trading/closePosition.js";
 import { approveBuilderFeeGuide } from "./trading/approveBuilderFeeGuide.js";
-import { twapOrder, copyWallet, executionStatus } from "./trading/execution.js";
+import { twapOrder, copyWallet, executionStatus, cancelExecution } from "./trading/execution.js";
 
 export const FREE_TOOLS: ToolDef[] = [
   requestFreeKey,
@@ -76,6 +76,7 @@ export const TRADING_TOOLS: ToolDef[] = [
   twapOrder,
   copyWallet,
   executionStatus,
+  cancelExecution,
 ];
 
 export const ALL_TOOLS: ToolDef[] = [...FREE_TOOLS, ...PREMIUM_TOOLS, ...TRADING_TOOLS];

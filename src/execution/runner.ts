@@ -32,9 +32,13 @@ export interface ExecutionPlan {
   live: boolean;
 }
 
+/** Consecutive failed slices after which a live plan stops firing the rest. */
+const MAX_CONSECUTIVE_CHILD_ERRORS = 3;
+
 export class ExecutionRunner {
   private readonly plans = new Map<string, ExecutionPlan>();
   private readonly timers = new Map<string, NodeJS.Timeout[]>();
+  private readonly consecutiveErrors = new Map<string, number>();
 
   constructor(private readonly trading: TradingService) {}
 
@@ -118,6 +122,16 @@ export class ExecutionRunner {
       slot.status = "error";
       slot.detail = err instanceof Error ? err.message : String(err);
       log.warn("execution child failed", { plan: plan.id, index: child.index, err: slot.detail });
+    }
+    // The same rejection (margin, blocked, bad market) usually repeats for
+    // every slice; stop instead of firing the rest of the plan into it.
+    const errors = slot.status === "error" ? (this.consecutiveErrors.get(plan.id) ?? 0) + 1 : 0;
+    this.consecutiveErrors.set(plan.id, errors);
+    if (errors >= MAX_CONSECUTIVE_CHILD_ERRORS && plan.status === "running") {
+      this.cancel(plan.id);
+      plan.status = "failed";
+      log.warn("execution plan stopped after consecutive failures", { plan: plan.id, errors });
+      return;
     }
     // finalize when all children resolved
     if (plan.children.every((c) => c.status !== "pending")) {

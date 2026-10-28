@@ -48,7 +48,7 @@ export const twapOrder: ToolDef = {
   },
   annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   run: async (args, ctx) => {
-    const { execution } = requireExecution(ctx);
+    const { execution, trading } = requireExecution(ctx);
     const market = await resolveMarket(ctx.hl, String(args.coin));
     const slices = args.slices as number;
     const children = planTwap({
@@ -84,6 +84,15 @@ export const twapOrder: ToolDef = {
       return {
         summary: `Dry-run TWAP: ${children.length} slices of ${market.coin} over ${args.durationMinutes}m. Set confirm=true & dryRun=false to run.`,
         data: { mode: "dry_run", coin: market.coin, side: String(args.side), children },
+      };
+    }
+    // Say so now: a plan that cannot submit would report "scheduled" and then
+    // fail every slice in the background.
+    const gate = trading.canSubmit();
+    if (!gate.ok) {
+      return {
+        summary: `TWAP not scheduled: ${gate.reason}.`,
+        data: { mode: "blocked", coin: market.coin, side: String(args.side), children },
       };
     }
     const plan = execution.schedule({
@@ -298,5 +307,29 @@ export const executionStatus: ToolDef = {
     }
     const plans = execution.list();
     return { summary: `${plans.length} execution plan(s).`, data: { plans } };
+  },
+};
+
+export const cancelExecution: ToolDef = {
+  name: "hl_cancel_execution",
+  tier: "trading",
+  title: "Cancel execution plan",
+  description:
+    "Stop a running TWAP/execution plan: slices not yet fired are dropped. Slices already submitted stay on the " +
+    "exchange; close them with hl_close_position if needed.",
+  inputSchema: { planId: z.string() },
+  outputSchema: { planId: z.string(), status: z.string(), submitted: z.number(), dropped: z.number() },
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  run: async (args, ctx) => {
+    const { execution } = requireExecution(ctx);
+    const planId = String(args.planId);
+    if (!execution.cancel(planId)) throw new ToolError("not_found", `No execution plan ${planId}.`);
+    const plan = execution.get(planId);
+    const submitted = plan?.children.filter((c) => c.status === "submitted").length ?? 0;
+    const dropped = plan?.children.filter((c) => c.status === "pending").length ?? 0;
+    return {
+      summary: `Plan ${planId.slice(0, 8)}…: ${plan?.status}. ${submitted} slice(s) already submitted, ${dropped} dropped.`,
+      data: { planId, status: plan?.status ?? "unknown", submitted, dropped },
+    };
   },
 };

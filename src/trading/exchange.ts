@@ -101,7 +101,7 @@ export class TradingService {
     return nonce;
   }
 
-  private canSubmit(): { ok: boolean; reason?: string } {
+  canSubmit(): { ok: boolean; reason?: string } {
     if (!this.config.tradingEnabled) return { ok: false, reason: "trading_disabled (set HL_ENABLE_TRADING=true)" };
     if (!this.config.agentPrivateKey) return { ok: false, reason: "no_agent_key (set HL_AGENT_PRIVATE_KEY)" };
     return { ok: true };

@@ -58,7 +58,8 @@ import { requestFreeKey } from "../src/tools/free/requestFreeKey.js";
 import { whaleFlowAlerts } from "../src/tools/premium/whaleFlowAlerts.js";
 import { whalePositions } from "../src/tools/premium/whalePositions.js";
 import { smartMoneyScore } from "../src/tools/premium/smartMoney.js";
-import { twapOrder } from "../src/tools/trading/execution.js";
+import { twapOrder, cancelExecution } from "../src/tools/trading/execution.js";
+import { ExecutionRunner } from "../src/execution/runner.js";
 
 test("formatSize rounds to szDecimals", () => {
   assert.equal(formatSize(1.23456789, 3), "1.235");
@@ -1526,4 +1527,58 @@ test("hl_twap_order refuses up front when a slice would exceed the per-order cap
     twapOrder.run({ coin: "BTC", side: "buy", totalSize: 2, slices: 4, durationMinutes: 10 }, ctx),
     (err: unknown) => err instanceof ToolError && err.code === "order_too_large",
   );
+});
+
+test("a live plan stops after three consecutive failed slices", async () => {
+  let calls = 0;
+  const trading = {
+    placeOrder: async () => {
+      calls++;
+      throw new Error("Insufficient margin to place order.");
+    },
+  } as unknown as TradingService;
+  const runner = new ExecutionRunner(trading);
+  const children = Array.from({ length: 6 }, (_, i) => ({ index: i, size: 0.01, atOffsetMs: i * 20 }));
+
+  const plan = runner.schedule({ kind: "twap", coin: "BTC", isBuy: true, reduceOnly: false, children, live: true });
+  await new Promise((resolve) => setTimeout(resolve, 250));
+
+  assert.equal(calls, 3, "the remaining slices must not keep firing into the same failure");
+  assert.equal(plan.status, "failed");
+});
+
+test("hl_twap_order reports blocked instead of scheduling when trading cannot submit", async () => {
+  let scheduled = false;
+  const execution = {
+    schedule: () => {
+      scheduled = true;
+      return { id: "x", children: [] };
+    },
+  };
+  const ctx = {
+    ...(tradingCtx(5, execution) as object),
+    trading: { canSubmit: () => ({ ok: false, reason: "trading_disabled (set HL_ENABLE_TRADING=true)" }) },
+    config: { maxOrderNotionalUsd: 10_000 },
+  } as unknown as ToolContext;
+
+  const { data } = await twapOrder.run(
+    { coin: "BTC", side: "buy", totalSize: 0.01, slices: 2, durationMinutes: 1, confirm: true, dryRun: false },
+    ctx,
+  );
+
+  assert.equal((data as { mode: string }).mode, "blocked");
+  assert.equal(scheduled, false);
+});
+
+test("hl_cancel_execution stops a running plan", async () => {
+  const runner = new ExecutionRunner({ placeOrder: async () => ({ mode: "submitted" }) } as unknown as TradingService);
+  const plan = runner.schedule({
+    kind: "twap", coin: "BTC", isBuy: true, reduceOnly: false, live: true,
+    children: [{ index: 0, size: 0.01, atOffsetMs: 60_000 }],
+  });
+  const ctx = { execution: runner, trading: {} } as unknown as ToolContext;
+
+  const { data } = await cancelExecution.run({ planId: plan.id }, ctx);
+
+  assert.equal((data as { status: string }).status, "cancelled");
 });

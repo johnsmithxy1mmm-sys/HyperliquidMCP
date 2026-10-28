@@ -65,9 +65,12 @@ Every emitted signal is **cryptographically signed** and scored against forward 
 | `hl_twap_order` | Slice a position into evenly-spaced child orders (TWAP) to minimize impact, builder code on each child |
 | `hl_copy_wallet` | Mirror a target wallet's positioning scaled to your equity (copy-trading), builder code attached |
 | `hl_execution_status` | Progress of running TWAP/execution plans |
+| `hl_cancel_execution` | Stop a running plan; slices not yet fired are dropped. A plan also stops by itself after 3 failed slices in a row |
 
 Trading defaults to **dry-run** (previews the exact signed action without sending). Submitting
 requires `HL_ENABLE_TRADING=true` + `HL_AGENT_PRIVATE_KEY` (env only) + `confirm=true` + `dryRun=false`.
+Every non-reduce-only order (including each TWAP slice and copy-trade leg) is capped at `HL_MAX_ORDER_NOTIONAL_USD`
+(default $10,000), which only the operator can raise.
 **Trading tools are never exposed on the remote HTTP server.**
 
 ---
