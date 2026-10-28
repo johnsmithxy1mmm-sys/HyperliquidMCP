@@ -1878,6 +1878,25 @@ test("x402 keeps the reservation when a gateway error leaves the settle outcome 
   assert.equal(retry.reason, "payment_replayed");
 });
 
+test("a refused settlement tells the client what to pay to retry", async () => {
+  const config = x402Config();
+  const requirements = buildPaymentRequirements(config, "hl_whale_positions");
+  const restore = stubFacilitator({ settles: 0 }, { status: 200, body: JSON.stringify({ success: false, errorReason: "insufficient_funds" }) });
+  let settleError: unknown;
+  try {
+    const { charge } = await verifyPayment(config, getDb(config.dbPath), x402Header("0xnonce-refused"), requirements);
+    await charge?.settle().catch((err: unknown) => {
+      settleError = err;
+    });
+  } finally {
+    restore();
+  }
+
+  // Nothing moved, so the caller may pay again: the 402 must carry what to pay, like the first one did.
+  assert.equal((settleError as ToolError).details?.reason, "settlement_failed");
+  assert.deepEqual((settleError as ToolError).details?.x402, requirements);
+});
+
 test("x402 refuses an authorization that expires before a call could settle", async () => {
   const config = x402Config();
   const soon = String(Math.floor(Date.now() / 1000) + 5);
