@@ -49,9 +49,6 @@ export const twapOrder: ToolDef = {
   run: async (args, ctx) => {
     const { execution, trading } = requireExecution(ctx);
     const market = await resolveMarket(ctx.hl, String(args.coin));
-    if (dexOf(market.coin)) {
-      throw new ToolError("hip3_trading_unsupported", `Trading HIP-3 markets (${market.coin}) is not supported yet.`);
-    }
     const slices = args.slices as number;
     const children = planTwap({
       totalSize: args.totalSize as number,
@@ -90,7 +87,7 @@ export const twapOrder: ToolDef = {
     }
     // Say so now: a plan that cannot submit would report "scheduled" and then
     // fail every slice in the background.
-    const gate = trading.canSubmit();
+    const gate = trading.canSubmit(Boolean(dexOf(market.coin)));
     if (!gate.ok) {
       return {
         summary: `TWAP not scheduled: ${gate.reason}.`,

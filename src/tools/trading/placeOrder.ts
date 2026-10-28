@@ -14,9 +14,11 @@ export const placeOrder: ToolDef = {
   description:
     "Place a limit or market perp order through YOUR local agent wallet, with the HyperSignal builder code attached. " +
     "Dry-run by default (previews the exact signed action without sending). Set confirm=true AND dryRun=false to submit. " +
+    "HIP-3 coins ('xyz:XYZ100') trade on their builder dex, which keeps its own collateral and may charge higher fees; " +
+    "live HIP-3 orders also need HL_ENABLE_HIP3_TRADING=true. " +
     TRADING_DISCLAIMER,
   inputSchema: {
-    coin: z.string().describe("Perp coin symbol, e.g. 'BTC'."),
+    coin: z.string().describe("Perp coin symbol, e.g. 'BTC', or a HIP-3 coin like 'xyz:XYZ100'."),
     side: z.enum(["buy", "sell"]),
     size: z.number().positive().describe("Order size in base units."),
     limitPx: z.number().positive().optional().describe("Limit price; omit for a market (IOC) order."),

@@ -2382,18 +2382,6 @@ test("an alert on a HIP-3 coin is evaluated against that dex's market", async ()
   assert.equal(fired, 1);
 });
 
-test("placeOrder refuses a HIP-3 coin rather than trade the main dex asset at the same index", async () => {
-  const config = {
-    tradingEnabled: false, agentPrivateKey: undefined, builder: { address: undefined, feeTenthsBps: 5 },
-    network: "testnet", maxOrderNotionalUsd: 10_000,
-  } as unknown as Config;
-
-  await assert.rejects(
-    new TradingService(config, hip3Hl()).placeOrder({ coin: "xyz:XYZ100", isBuy: true, sz: 0.01, reduceOnly: false, tif: "Ioc" }, { confirm: false, dryRun: true }),
-    (err: unknown) => err instanceof ToolError && err.code === "hip3_trading_unsupported",
-  );
-});
-
 /** Stubs Telegram's Bot API; returns the sent messages and a restore function. */
 function stubTelegram(username = "hypersignal_bot") {
   const sent: Array<{ chat_id: string; text: string }> = [];
@@ -2703,4 +2691,71 @@ test("account tools read dex like the whale tools: case-insensitive, and 'main' 
 
   assert.deepEqual((xyz.data as { positions: Array<{ coin: string }> }).positions.map((p) => p.coin), ["xyz:XYZ100"]);
   assert.deepEqual((main.data as { positions: Array<{ coin: string }> }).positions.map((p) => p.coin), ["BTC"]);
+});
+
+/** A TradingService able to submit, over hip3Hl(): the "xyz" dex is perpDexs index 1, XYZ100 its index 0. */
+function hip3Trading(opts: { hip3TradingEnabled?: boolean; hl?: Record<string, unknown> } = {}) {
+  const config = {
+    tradingEnabled: true,
+    hip3TradingEnabled: opts.hip3TradingEnabled ?? false,
+    agentPrivateKey: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80", // Hardhat #0 (test-only)
+    builder: { address: undefined, feeTenthsBps: 5 },
+    network: "testnet",
+    exchangeBaseUrl: "https://exchange.invalid/exchange",
+    requestTimeoutMs: 5_000,
+    maxOrderNotionalUsd: 10_000,
+  } as unknown as Config;
+  return new TradingService(config, hip3Hl(opts.hl));
+}
+
+const XYZ_BUY = { coin: "xyz:XYZ100", isBuy: true, sz: 0.01, reduceOnly: false, tif: "Ioc" } as const;
+
+test("a HIP-3 order goes to the builder dex's asset id, not the main-dex asset at the same index", async () => {
+  const result = await hip3Trading().placeOrder(XYZ_BUY, { confirm: false, dryRun: true });
+
+  // 100000 + perp_dex_index (xyz = 1) * 10000 + index_in_meta (0)
+  assert.equal((result.action as { orders: Array<{ a: number }> }).orders[0].a, 110_000);
+  assert.equal(result.hip3?.assetId, 110_000);
+});
+
+test("a live HIP-3 order is blocked until HL_ENABLE_HIP3_TRADING is set", async () => {
+  const result = await hip3Trading().placeOrder(XYZ_BUY, { confirm: true, dryRun: false });
+
+  assert.equal(result.mode, "blocked");
+  assert.match(String(result.reason), /HL_ENABLE_HIP3_TRADING/);
+});
+
+test("closing a HIP-3 position sizes the order from that dex's account", async () => {
+  const hl = { clearinghouseState: async (_user: string, dex?: string) => (dex === "xyz" ? walletWith("xyz:XYZ100", -2) : walletWithBtc(1)) };
+
+  const result = await hip3Trading({ hl }).closePosition("xyz:XYZ100", { confirm: false, dryRun: true }, WHALE);
+
+  const order = (result.action as { orders: Array<{ a: number; b: boolean; s: string; r: boolean }> }).orders[0];
+  assert.deepEqual({ a: order.a, b: order.b, s: order.s, r: order.r }, { a: 110_000, b: true, s: "2", r: true });
+});
+
+test("hl_twap_order on a HIP-3 coin plans, and a live run is blocked until HL_ENABLE_HIP3_TRADING is set", async () => {
+  const execution = { schedule: () => assert.fail("a blocked HIP-3 TWAP must not be scheduled") };
+  const ctx = { hl: hip3Hl(), mode: "stdio", trading: hip3Trading(), execution, config: { maxOrderNotionalUsd: 10_000 } } as unknown as ToolContext;
+
+  const { data } = await twapOrder.run(
+    { coin: "xyz:XYZ100", side: "buy", totalSize: 0.02, slices: 2, durationMinutes: 1, confirm: true, dryRun: false },
+    ctx,
+  );
+
+  assert.equal((data as { mode: string }).mode, "blocked");
+});
+
+test("a HIP-3 order refused for margin says how to fund that dex", async () => {
+  const realFetch = globalThis.fetch;
+  const refused = { status: "ok", response: { type: "order", data: { statuses: [{ error: "Insufficient margin to place order." }] } } };
+  globalThis.fetch = (async () => new Response(JSON.stringify(refused))) as typeof fetch;
+  try {
+    await assert.rejects(
+      hip3Trading({ hip3TradingEnabled: true }).placeOrder(XYZ_BUY, { confirm: true, dryRun: false }),
+      (err: unknown) => err instanceof ToolError && err.code === "order_rejected" && /unified account/i.test(err.message),
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });

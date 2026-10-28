@@ -39,6 +39,8 @@ export interface Config {
 
   /** Trading tier master switch. Even when true, remote HTTP mode NEVER exposes trading tools. */
   tradingEnabled: boolean;
+  /** Live orders on HIP-3 builder dexes: off until the operator has run them on testnet. */
+  hip3TradingEnabled: boolean;
   /** Agent-wallet private key — ONLY from env, ONLY used in local stdio mode. */
   agentPrivateKey: string | undefined;
   /** Largest notional (USD) one non-reduce-only order may carry; the model cannot raise it. */
@@ -144,6 +146,7 @@ export function loadConfig(): Config {
     },
 
     tradingEnabled: envBool("HL_ENABLE_TRADING", false),
+    hip3TradingEnabled: envBool("HL_ENABLE_HIP3_TRADING", false),
     agentPrivateKey: process.env.HL_AGENT_PRIVATE_KEY?.trim() || undefined,
     maxOrderNotionalUsd: envNumClamped("HL_MAX_ORDER_NOTIONAL_USD", 10_000, 1, 1_000_000_000),
     accountAddress: process.env.HL_ACCOUNT_ADDRESS?.trim() || undefined,

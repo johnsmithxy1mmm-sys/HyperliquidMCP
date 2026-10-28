@@ -73,6 +73,9 @@ Trading defaults to **dry-run** (previews the exact signed action without sendin
 requires `HL_ENABLE_TRADING=true` + `HL_AGENT_PRIVATE_KEY` (env only) + `confirm=true` + `dryRun=false`.
 Every non-reduce-only order (including each TWAP slice and copy-trade leg) is capped at `HL_MAX_ORDER_NOTIONAL_USD`
 (default $10,000), which only the operator can raise.
+HIP-3 coins (`xyz:XYZ100`) trade on their builder dex, which keeps its own collateral (enable the unified account
+or transfer collateral to it) and may charge higher fees. Live HIP-3 orders also need `HL_ENABLE_HIP3_TRADING=true`:
+turn it on after a testnet run. Copy-trading mirrors main-dex positions only.
 **Trading tools are never exposed on the remote HTTP server.**
 
 ---
