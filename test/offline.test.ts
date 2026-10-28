@@ -50,6 +50,10 @@ import { registerTool, type ToolDef } from "../src/tools/registry.js";
 import { BillingService } from "../src/billing/service.js";
 import { ToolError } from "../src/core/errors.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import express from "express";
+import type { AddressInfo } from "node:net";
+import { ipBucket, TRUST_PROXY_SETTING } from "../src/core/clientIp.js";
+import { requestFreeKey } from "../src/tools/free/requestFreeKey.js";
 
 test("formatSize rounds to szDecimals", () => {
   assert.equal(formatSize(1.23456789, 3), "1.235");
@@ -739,7 +743,7 @@ test("self-serve free key: one active key per fingerprint, re-issue is not a quo
   upsertKey(db, "hash2", "free", "self-serve");
   recordFreeKeyGrant(db, fp, "hash2");
 
-  assert.equal(getKey(db, "hash1")?.disabled, 1, "old key must be revoked");
+  assert.equal(getKey(db, "hash1"), undefined, "old key must be removed, not left behind as a dead row");
   assert.equal(getKey(db, "hash2")?.disabled, 0, "new key must be active");
   assert.equal(monthlyTotal(db, "hash2", "2026-07"), 40, "usage must carry over");
   assert.equal(monthlyTotal(db, "hash1", "2026-07"), 0);
@@ -1189,4 +1193,56 @@ test("price_move fires once per crossing and re-arms after the move fades", () =
   const recross = evaluateAlert({ ...base, lastState: fades.state }, { now: 4, markPx: 98, priorPx: 100 });
 
   assert.deepEqual([cross.fired, persists.fired, fades.fired, recross.fired], [true, false, false, true]);
+});
+
+test("behind one proxy, a client-sent X-Forwarded-For cannot choose the client IP", async () => {
+  const app = express();
+  app.set("trust proxy", TRUST_PROXY_SETTING);
+  app.get("/ip", (req, res) => {
+    res.send(req.ip);
+  });
+  const server = app.listen(0);
+  const { port } = server.address() as AddressInfo;
+
+  // The client forges 6.6.6.6; the proxy (Fly, Caddy) appends the real peer 1.2.3.4.
+  const res = await fetch(`http://127.0.0.1:${port}/ip`, { headers: { "X-Forwarded-For": "6.6.6.6, 1.2.3.4" } });
+  server.close();
+
+  assert.equal(await res.text(), "1.2.3.4");
+});
+
+test("ipBucket collapses an IPv6 /64 to one requester and unwraps IPv4-mapped addresses", () => {
+  assert.equal(ipBucket("2001:db8:1:2::a"), ipBucket("2001:0db8:0001:0002:ffff:1:2:3"));
+  assert.notEqual(ipBucket("2001:db8:1:2::a"), ipBucket("2001:db8:1:3::a"));
+  assert.equal(ipBucket("::ffff:1.2.3.4"), "1.2.3.4");
+  assert.equal(ipBucket("1.2.3.4"), "1.2.3.4");
+});
+
+test("hl_request_free_key re-issues at most once an hour per requester", async () => {
+  const billing = new BillingService({
+    dbPath: join(tmpdir(), `hypersignal-test-${Date.now()}.db`),
+    x402: { enabled: false },
+  } as unknown as Config);
+  const ctx = (clientIp: string) => ({ mode: "http", billing, clientIp }) as unknown as ToolContext;
+
+  await requestFreeKey.run({}, ctx("2001:db8:77:1::a"));
+
+  // Another address in the same /64, minutes later: same requester, refused.
+  await assert.rejects(
+    requestFreeKey.run({}, ctx("2001:db8:77:1::b")),
+    (err: unknown) => err instanceof ToolError && err.code === "free_key_cooldown",
+  );
+});
+
+test("a free key may be re-issued again after the hour has passed", () => {
+  const billing = new BillingService({
+    dbPath: join(tmpdir(), `hypersignal-test-${Date.now()}.db`),
+    x402: { enabled: false },
+  } as unknown as Config);
+  const fingerprint = `cooldown-${Date.now()}-${Math.random()}`;
+  const t0 = 1_900_000_000_000;
+
+  billing.issueFreeKey(fingerprint, t0);
+
+  assert.equal(billing.issueFreeKey(fingerprint, t0 + 61 * 60_000).reissued, true);
 });

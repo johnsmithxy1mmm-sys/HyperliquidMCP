@@ -192,7 +192,9 @@ export function recordFreeKeyGrant(
   const tx = database.transaction(() => {
     const prior = getFreeKeyGrant(database, fingerprint);
     if (prior) {
-      database.prepare(`UPDATE api_keys SET disabled = 1 WHERE key_hash = ?`).run(prior.keyHash);
+      // Deleted, not disabled: its usage moves to the new key below, so a dead
+      // row per re-issue would only grow the table.
+      database.prepare(`DELETE FROM api_keys WHERE key_hash = ?`).run(prior.keyHash);
       database.prepare(`UPDATE usage_counters SET key_hash = ? WHERE key_hash = ?`).run(newKeyHash, prior.keyHash);
     }
     database

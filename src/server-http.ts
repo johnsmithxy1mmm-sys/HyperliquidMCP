@@ -19,6 +19,7 @@ import { CohortRefresher } from "./hl/cohortRefresh.js";
 import { ScoreSampler } from "./smartmoney/scoreSampler.js";
 import type { ToolContext } from "./tools/registry.js";
 import { log } from "./logger.js";
+import { TRUST_PROXY_SETTING } from "./core/clientIp.js";
 
 function envFlag(name: string): boolean {
   return ["1", "true", "yes", "on"].includes((process.env[name] ?? "").trim().toLowerCase());
@@ -74,7 +75,7 @@ async function main(): Promise<void> {
   app.disable("x-powered-by");
   // Behind Fly/Nginx/Caddy the client IP arrives in X-Forwarded-For; only
   // trust it when explicitly deployed behind a proxy.
-  if (envFlag("TRUST_PROXY")) app.set("trust proxy", true);
+  if (envFlag("TRUST_PROXY")) app.set("trust proxy", TRUST_PROXY_SETTING);
 
   app.use(express.json({ limit: "2mb" }));
 
