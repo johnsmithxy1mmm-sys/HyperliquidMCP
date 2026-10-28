@@ -2862,3 +2862,13 @@ test("a coin on a dex named with capitals resolves and trades on that exact dex"
   // 100000 + perp_dex_index (VOLMEX = 2, not volmex = 3) * 10000 + index_in_meta (0)
   assert.equal(order.hip3?.assetId, 120_000);
 });
+
+test("hl_hip3_analytics filtered to one dex scans that exact dex, not its lowercase twin", async () => {
+  const { hip3Analytics } = await import("../src/tools/premium/hip3Analytics.js");
+
+  const { data } = await hip3Analytics.run({ dex: "VOLMEX" }, { hl: hip3Hl(caseDexes()) } as unknown as ToolContext);
+
+  const out = data as { dexsScanned: string[]; hip3MarketCount: number };
+  assert.deepEqual(out.dexsScanned, ["VOLMEX"]);
+  assert.equal(out.hip3MarketCount, 1);
+});
