@@ -25,6 +25,7 @@ import { ensureHouseAlerts } from "./alerts/house.js";
 import { buildPublicProof, renderProofHtml } from "./public/proof.js";
 import { TelegramBot } from "./telegram/bot.js";
 import { TelegramStore } from "./telegram/store.js";
+import { WebhookSender, WebhookStore } from "./webhook/webhooks.js";
 import { getDb } from "./billing/db.js";
 import { ToolError } from "./core/errors.js";
 
@@ -81,7 +82,13 @@ async function main(): Promise<void> {
     : undefined;
   telegram?.start();
 
-  const engine = new AlertEngine(core.hl, core.store, core.signer, cohortCtx, telegram ? (subject, message) => void telegram.notify(subject, message) : undefined);
+  // Webhooks need no setup: a key only gets POSTs after setting a vetted https URL.
+  const webhooks = new WebhookSender(new WebhookStore(getDb(config.dbPath)));
+
+  const engine = new AlertEngine(core.hl, core.store, core.signer, cohortCtx, (subject, message, payload) => {
+    if (telegram) void telegram.notify(subject, message);
+    void webhooks.notify(subject, payload);
+  });
   engine.start();
 
   // The server's own alerts keep the published track record growing without customers.
@@ -203,6 +210,7 @@ async function main(): Promise<void> {
     // Stateless: fresh server + transport per request.
     const server = buildServer(core, {
       telegram,
+      webhooks,
       tiers: ["free", "premium"],
       mode: "http",
       subject,

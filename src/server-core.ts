@@ -16,7 +16,7 @@ import type { TradingService } from "./trading/exchange.js";
 import type { ExecutionRunner } from "./execution/runner.js";
 
 export const SERVER_NAME = "hypersignal-mcp";
-export const SERVER_VERSION = "1.9.1";
+export const SERVER_VERSION = "1.10.0";
 
 /** Long-lived singletons shared across requests. */
 export class Core {
@@ -48,6 +48,7 @@ export interface BuildServerOptions {
   /** Billing service (http only) — self-serve free-key issuance. */
   billing?: BillingLike;
   telegram?: ToolContext["telegram"];
+  webhooks?: ToolContext["webhooks"];
 }
 
 const NO_AUTH: ToolContext["authorize"] = async () => undefined; // unmetered (stdio / local)
@@ -78,6 +79,7 @@ export function buildServer(core: Core, opts: BuildServerOptions): McpServer {
     clientIp: opts.clientIp,
     billing: opts.billing,
     telegram: opts.telegram,
+    webhooks: opts.webhooks,
   };
 
   registerTools(server, ctx, opts.tiers);

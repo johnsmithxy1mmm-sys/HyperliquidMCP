@@ -36,6 +36,7 @@ import { closePosition } from "./trading/closePosition.js";
 import { approveBuilderFeeGuide } from "./trading/approveBuilderFeeGuide.js";
 import { twapOrder, copyWallet, executionStatus, cancelExecution } from "./trading/execution.js";
 import { linkTelegram, unlinkTelegram } from "./free/telegram.js";
+import { setWebhook, deleteWebhook } from "./free/webhook.js";
 
 export const FREE_TOOLS: ToolDef[] = [
   requestFreeKey,
@@ -49,6 +50,8 @@ export const FREE_TOOLS: ToolDef[] = [
   adminStats,
   linkTelegram,
   unlinkTelegram,
+  setWebhook,
+  deleteWebhook,
   scoreCalibration,
 ];
 

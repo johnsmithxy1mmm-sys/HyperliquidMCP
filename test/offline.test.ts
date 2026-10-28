@@ -2436,3 +2436,58 @@ test("calibration keeps one observation per wallet per non-overlapping forward w
   // Day 0 and day 30 for each wallet; day 1..29 overlap day 0's window.
   assert.equal(outcomes.length, 4);
 });
+
+test("webhook targets on private, loopback or link-local addresses are refused", async () => {
+  const { isPrivateAddress } = await import("../src/webhook/webhooks.js");
+  for (const ip of ["127.0.0.1", "10.1.2.3", "172.20.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "::1", "fd00::1", "fe80::1", "::ffff:10.0.0.1"]) {
+    assert.equal(isPrivateAddress(ip), true, ip);
+  }
+  assert.equal(isPrivateAddress("93.184.216.34"), false);
+  assert.equal(isPrivateAddress("2606:4700::1111"), false);
+});
+
+test("a webhook URL must be https and resolve only to public addresses", async () => {
+  const { assertPublicHttpsUrl } = await import("../src/webhook/webhooks.js");
+  const resolvesTo = (address: string) => async () => [{ address, family: address.includes(":") ? 6 : 4 }];
+
+  await assert.rejects(assertPublicHttpsUrl("http://example.com/hook", resolvesTo("93.184.216.34")));
+  await assert.rejects(assertPublicHttpsUrl("https://internal.example/hook", resolvesTo("10.0.0.5")));
+  await assertPublicHttpsUrl("https://example.com/hook", resolvesTo("93.184.216.34"));
+});
+
+test("webhook deliveries are HMAC-signed and capped at 30 an hour per key", async () => {
+  const { WebhookStore, WebhookSender } = await import("../src/webhook/webhooks.js");
+  const { createHmac } = await import("node:crypto");
+  const store = new WebhookStore(new BetterSqlite3(":memory:"));
+  const secret = store.set("key-1", "https://example.com/hook");
+  const sender = new WebhookSender(store, async () => [{ address: "93.184.216.34", family: 4 }]);
+  const posts: Array<{ body: string; signature: string | null; redirect?: string }> = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (_url: unknown, init?: { body?: unknown; headers?: Record<string, string>; redirect?: string }) => {
+    posts.push({ body: String(init?.body), signature: init?.headers?.["x-hypersignal-signature"] ?? null, redirect: init?.redirect });
+    return new Response("ok");
+  }) as typeof fetch;
+  try {
+    for (let i = 0; i < 31; i++) await sender.notify("key-1", { message: `alert ${i}` });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  assert.equal(posts.length, 30);
+  assert.equal(posts[0].signature, `sha256=${createHmac("sha256", secret).update(posts[0].body).digest("hex")}`);
+  assert.equal(posts[0].redirect, "manual", "a redirect must not lead the server to an internal address");
+});
+
+test("hl_set_webhook validates the URL and returns the signing secret once", async () => {
+  const { setWebhook, deleteWebhook } = await import("../src/tools/free/webhook.js");
+  const { WebhookStore, WebhookSender } = await import("../src/webhook/webhooks.js");
+  const sender = new WebhookSender(new WebhookStore(new BetterSqlite3(":memory:")), async () => [{ address: "93.184.216.34", family: 4 }]);
+  const ctx = { subject: "key-1", webhooks: sender } as unknown as ToolContext;
+
+  const { data } = await setWebhook.run({ url: "https://example.com/hook" }, ctx);
+  await assert.rejects(setWebhook.run({ url: "http://example.com/hook" }, ctx));
+  const removed = await deleteWebhook.run({}, ctx);
+
+  assert.match((data as { secret: string }).secret, /^[0-9a-f]{64}$/);
+  assert.equal((removed.data as { deleted: boolean }).deleted, true);
+});
