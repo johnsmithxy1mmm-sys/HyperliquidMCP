@@ -158,6 +158,15 @@ export class AlertEngine {
       try {
         const resolved = await resolveCohort(this.ctxForCohort, cohort, 100);
         const accounts = await fetchCohortAccounts(this.ctxForCohort, resolved.addresses);
+        // A wallet that failed to load would read as an exit and could flip the
+        // cohort's sign into a signed signal; skip the cohort this tick instead.
+        if (accounts.length < resolved.addresses.length) {
+          log.warn("whale alert cohort incomplete; skipped this tick", {
+            fetched: accounts.length,
+            requested: resolved.addresses.length,
+          });
+          continue;
+        }
         const agg = aggregateByCoin(accounts);
         for (const [coin, c] of agg) out.set(`${key}:${coin}`, c.netNtlUsd);
       } catch (err) {

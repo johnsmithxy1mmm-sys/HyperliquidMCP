@@ -54,6 +54,8 @@ import express from "express";
 import type { AddressInfo } from "node:net";
 import { ipBucket, TRUST_PROXY_SETTING } from "../src/core/clientIp.js";
 import { requestFreeKey } from "../src/tools/free/requestFreeKey.js";
+import { whaleFlowAlerts } from "../src/tools/premium/whaleFlowAlerts.js";
+import { whalePositions } from "../src/tools/premium/whalePositions.js";
 
 test("formatSize rounds to szDecimals", () => {
   assert.equal(formatSize(1.23456789, 3), "1.235");
@@ -1245,4 +1247,96 @@ test("a free key may be re-issued again after the hour has passed", () => {
   billing.issueFreeKey(fingerprint, t0);
 
   assert.equal(billing.issueFreeKey(fingerprint, t0 + 61 * 60_000).reissued, true);
+});
+
+/** A clearinghouseState with one BTC position (szi > 0 long, < 0 short). */
+function walletWithBtc(szi: number) {
+  const ntl = String(Math.abs(szi) * 60000);
+  return {
+    marginSummary: { accountValue: "1000000", totalNtlPos: ntl, totalRawUsd: "0", totalMarginUsed: "0" },
+    crossMarginSummary: { accountValue: "1000000", totalNtlPos: ntl, totalRawUsd: "0", totalMarginUsed: "0" },
+    crossMaintenanceMarginUsed: "0",
+    withdrawable: "0",
+    assetPositions: [
+      {
+        type: "oneWay",
+        position: {
+          coin: "BTC", szi: String(szi), entryPx: "60000", positionValue: ntl, unrealizedPnl: "0",
+          returnOnEquity: "0", leverage: { type: "cross", value: 1 }, liquidationPx: null, marginUsed: "0", maxLeverage: 40,
+        },
+      },
+    ],
+  };
+}
+
+test("whale_net_flip does not fire when a cohort wallet failed to load", async () => {
+  const whale = "0x1111111111111111111111111111111111111111";
+  const minnow = "0x2222222222222222222222222222222222222222";
+  // The cohort was net long (the whale), last seen with sign +1.
+  const alert: AlertRecord = {
+    id: "w", subject: "s", type: "whale_net_flip", params: { coin: "BTC", cohort: [whale, minnow] },
+    enabled: true, cooldownMinutes: 5, lastFiredAt: null, lastState: { sign: 1 }, createdAt: 0,
+  };
+  const recorded: unknown[] = [];
+  const store = {
+    alerts: { listActive: () => [alert], updateState: () => undefined, recordFired: () => undefined },
+    signals: { dueForScoring: () => [], record: (s: unknown) => recorded.push(s) },
+    snapshots: { record: () => undefined },
+    scores: { due: () => [] },
+  } as unknown as Warehouse;
+  const hl = {
+    metaAndAssetCtxs: async () => [
+      { universe: [{ name: "BTC", szDecimals: 5, maxLeverage: 40 }] },
+      [{ markPx: "60000", prevDayPx: "60000", funding: "0", oraclePx: "60000", openInterest: "0", dayNtlVlm: "0" }],
+    ],
+    // The whale's request fails; only the small short loads.
+    clearinghouseState: async (address: string) => {
+      if (address === whale) throw new Error("429 Too Many Requests");
+      return walletWithBtc(-1);
+    },
+  } as unknown as HyperliquidClient;
+  const signer = { sign: () => ({ signature: "sig" }) } as unknown as SignalSigner;
+  const engine = new AlertEngine(hl, store, signer, { store, hl } as unknown as ToolContext);
+
+  const fired = await engine.tick(1_000_000);
+
+  assert.equal(fired, 0);
+  assert.equal(recorded.length, 0, "no signed signal from a partial cohort");
+});
+
+/** Two-wallet cohort whose whale (net long 10 BTC an hour ago) now fails to load. */
+function partialCohortCtx() {
+  const whale = "0x3333333333333333333333333333333333333333";
+  const minnow = "0x4444444444444444444444444444444444444444";
+  const cohortKey = shortHash([whale, minnow].sort().join(","));
+  const snapshots = new InMemorySnapshotStore();
+  const hourAgo = Date.now() - 3_600_000;
+  snapshots.record("whaleFlow", `BTC:${cohortKey}`, { netNtlUsd: 540_000 }, hourAgo);
+  snapshots.record("whalePositions", `BTC:${cohortKey}`, { netNtlUsd: 540_000 }, hourAgo);
+  const hl = {
+    clearinghouseState: async (address: string) => {
+      if (address === whale) throw new Error("429 Too Many Requests");
+      return walletWithBtc(-1);
+    },
+  };
+  return { cohort: [whale, minnow], ctx: { hl, snapshots, store: { cohort: { get: () => null } } } as unknown as ToolContext };
+}
+
+test("hl_whale_flow_alerts reports no flow from a partially loaded cohort", async () => {
+  const { cohort, ctx } = partialCohortCtx();
+
+  const { data } = await whaleFlowAlerts.run({ cohort, thresholdUsd: 100_000, lookbackMinutes: 60 }, ctx);
+
+  assert.deepEqual((data as { alerts: unknown[] }).alerts, []);
+  assert.equal((data as { walletsRequested: number }).walletsRequested, 2);
+});
+
+test("hl_whale_positions gives no 1h change for a partially loaded cohort", async () => {
+  const { cohort, ctx } = partialCohortCtx();
+
+  const { data } = await whalePositions.run({ cohort }, ctx);
+
+  const btc = (data as { coins: Array<{ coin: string; change1hUsd: number | null }> }).coins.find((c) => c.coin === "BTC");
+  assert.equal(btc?.change1hUsd, null);
+  assert.equal((data as { walletsRequested: number }).walletsRequested, 2);
 });
