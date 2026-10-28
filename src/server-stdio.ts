@@ -9,6 +9,7 @@ import { loadConfig } from "./config.js";
 import { Core, buildServer } from "./server-core.js";
 import { TradingService } from "./trading/exchange.js";
 import { ExecutionRunner } from "./execution/runner.js";
+import { getDb } from "./billing/db.js";
 import { AlertEngine } from "./alerts/engine.js";
 import { CohortRefresher } from "./hl/cohortRefresh.js";
 import { ScoreSampler } from "./smartmoney/scoreSampler.js";
@@ -24,7 +25,7 @@ async function main(): Promise<void> {
 
   // Trading service always available locally so dry-run previews work without a key.
   const trading = new TradingService(config, core.hl);
-  const execution = new ExecutionRunner(trading);
+  const execution = new ExecutionRunner(trading, getDb(config.dbPath));
 
   const server = buildServer(core, { tiers, mode: "stdio", subject: "local", trading, execution });
 
@@ -42,8 +43,8 @@ async function main(): Promise<void> {
 
   // A live TWAP holds the process open until it completes. On shutdown the
   // already-submitted child orders are real positions, so report what was left
-  // unfilled instead of exiting silently — the plan is in-memory and will not
-  // survive the restart.
+  // unfilled instead of exiting silently; the plan is kept as interrupted and
+  // is not resumed on the next start.
   const onShutdown = (signal: string): void => {
     const abandoned = execution.cancelAllPending();
     for (const p of abandoned) {

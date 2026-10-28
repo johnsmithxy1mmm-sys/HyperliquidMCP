@@ -4,15 +4,18 @@
  * to each. Live submission is gated (trading enabled + agent key + confirm);
  * otherwise plans stay in "planned" state as previews.
  *
- * Kept intentionally simple and in-memory: execution state lives for the life
- * of the local process. Testnet-first — verify before mainnet.
+ * Plans are kept in SQLite when a DB is given, so a restart still shows what a
+ * plan sent. A plan the restart cut short comes back "interrupted" and is never
+ * resumed: its remaining slices were timed for a market that has since moved.
+ * Testnet-first — verify before mainnet.
  */
 import { randomUUID } from "node:crypto";
+import type Database from "better-sqlite3";
 import type { TradingService, OrderParams } from "../trading/exchange.js";
 import type { ChildOrder } from "./plan.js";
 import { log } from "../logger.js";
 
-export type PlanStatus = "planned" | "running" | "completed" | "failed" | "cancelled";
+export type PlanStatus = "planned" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
 
 export interface ChildResult {
   index: number;
@@ -30,7 +33,12 @@ export interface ExecutionPlan {
   createdAt: number;
   children: ChildResult[];
   live: boolean;
+  note?: string;
 }
+
+const INTERRUPTED_NOTE =
+  "The server stopped before this plan finished; its pending slices were not sent and will not be. " +
+  "A slice in flight at that moment may still have filled: check positions before re-running.";
 
 /** Consecutive failed slices after which a live plan stops firing the rest. */
 const MAX_CONSECUTIVE_CHILD_ERRORS = 3;
@@ -40,7 +48,31 @@ export class ExecutionRunner {
   private readonly timers = new Map<string, NodeJS.Timeout[]>();
   private readonly consecutiveErrors = new Map<string, number>();
 
-  constructor(private readonly trading: TradingService) {}
+  constructor(
+    private readonly trading: TradingService,
+    private readonly db?: Database.Database,
+  ) {
+    if (!db) return;
+    db.exec(`CREATE TABLE IF NOT EXISTS execution_plans (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, plan TEXT NOT NULL)`);
+    for (const row of db.prepare(`SELECT plan FROM execution_plans`).all() as Array<{ plan: string }>) {
+      const plan = JSON.parse(row.plan) as ExecutionPlan;
+      // Still "running" in the DB: the process that ran it died mid-plan.
+      if (plan.status === "running") this.interrupt(plan);
+      this.plans.set(plan.id, plan);
+    }
+  }
+
+  private save(plan: ExecutionPlan): void {
+    this.db
+      ?.prepare(`INSERT OR REPLACE INTO execution_plans (id, created_at, plan) VALUES (?, ?, ?)`)
+      .run(plan.id, plan.createdAt, JSON.stringify(plan));
+  }
+
+  private interrupt(plan: ExecutionPlan): void {
+    plan.status = "interrupted";
+    plan.note = INTERRUPTED_NOTE;
+    this.save(plan);
+  }
 
   get(id: string): ExecutionPlan | undefined {
     return this.plans.get(id);
@@ -56,6 +88,7 @@ export class ExecutionRunner {
     for (const t of this.timers.get(id) ?? []) clearTimeout(t);
     this.timers.delete(id);
     if (plan.status === "planned" || plan.status === "running") plan.status = "cancelled";
+    this.save(plan);
     return true;
   }
 
@@ -83,6 +116,7 @@ export class ExecutionRunner {
       live: args.live,
     };
     this.plans.set(id, plan);
+    this.save(plan);
     if (!args.live) return plan;
 
     const timers: NodeJS.Timeout[] = [];
@@ -130,6 +164,7 @@ export class ExecutionRunner {
     if (errors >= MAX_CONSECUTIVE_CHILD_ERRORS && plan.status === "running") {
       this.cancel(plan.id);
       plan.status = "failed";
+      this.save(plan);
       log.warn("execution plan stopped after consecutive failures", { plan: plan.id, errors });
       return;
     }
@@ -140,6 +175,7 @@ export class ExecutionRunner {
       for (const t of this.timers.get(plan.id) ?? []) clearTimeout(t);
       this.timers.delete(plan.id);
     }
+    this.save(plan);
   }
 
   /** Plans with child orders still scheduled. */
@@ -154,7 +190,7 @@ export class ExecutionRunner {
    *
    * Called on shutdown: the already-submitted children are real positions on
    * the exchange, so the operator has to be told what the plan did NOT finish.
-   * The plan itself is in-memory and does not survive the restart.
+   * The plan is stored as interrupted, not cancelled: the user did not stop it.
    */
   cancelAllPending(): Array<{ id: string; coin: string; side: string; submitted: number; unfilled: number }> {
     const out = [];
@@ -162,6 +198,7 @@ export class ExecutionRunner {
       const submitted = plan.children.filter((c) => c.status === "submitted").length;
       const unfilled = plan.children.filter((c) => c.status === "pending").length;
       this.cancel(plan.id);
+      this.interrupt(plan);
       out.push({ id: plan.id, coin: plan.coin, side: plan.side, submitted, unfilled });
     }
     return out;

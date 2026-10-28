@@ -1588,6 +1588,47 @@ test("hl_cancel_execution stops a running plan", async () => {
   assert.equal((data as { status: string }).status, "cancelled");
 });
 
+test("a live TWAP cut short by a crash comes back interrupted and is not resumed", async () => {
+  const db = new BetterSqlite3(":memory:");
+  let sent = 0;
+  const trading = {
+    placeOrder: async () => {
+      sent++;
+      return { mode: "submitted" };
+    },
+  } as unknown as TradingService;
+  const crashed = new ExecutionRunner(trading, db);
+  const plan = crashed.schedule({
+    kind: "twap", coin: "BTC", isBuy: true, reduceOnly: false, live: true,
+    children: [{ index: 0, size: 0.01, atOffsetMs: 0 }, { index: 1, size: 0.01, atOffsetMs: 60_000 }],
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20)); // the first slice goes out
+
+  // A process that died leaves its plan "running" in the DB; the next one reads it from there.
+  const restarted = new ExecutionRunner(trading, db);
+  const after = restarted.get(plan.id);
+  crashed.cancel(plan.id); // stop the dead process's timer so the test can exit
+
+  assert.equal(after?.status, "interrupted");
+  assert.deepEqual(after?.children.map((c) => c.status), ["submitted", "pending"]);
+  assert.equal(restarted.pending().length, 0, "a restarted server must not resume sending the rest");
+  assert.equal(sent, 1);
+});
+
+test("a plan cut short by shutdown is stored as interrupted, not as cancelled by the user", () => {
+  const db = new BetterSqlite3(":memory:");
+  const trading = { placeOrder: async () => ({ mode: "submitted" }) } as unknown as TradingService;
+  const runner = new ExecutionRunner(trading, db);
+  const plan = runner.schedule({
+    kind: "twap", coin: "BTC", isBuy: true, reduceOnly: false, live: true,
+    children: [{ index: 0, size: 0.01, atOffsetMs: 60_000 }],
+  });
+
+  runner.cancelAllPending();
+
+  assert.equal(new ExecutionRunner(trading, db).get(plan.id)?.status, "interrupted");
+});
+
 test("Polymarket 'Up or Down' markets are direction bets, not price thresholds", () => {
   assert.equal(parseThresholdMarket("Solana Up or Down - October 28"), null);
 });

@@ -25,8 +25,8 @@ export const twapOrder: ToolDef = {
     "Accumulate/reduce a position by slicing it into evenly-spaced child orders over a duration (TWAP), minimizing " +
     "market impact, with the builder code on every child. Dry-run returns the schedule; live schedules it and returns " +
     "a plan id (poll with hl_execution_status). A live plan keeps the server process alive until every slice has " +
-    "fired; plan state is in-memory, so if the process is killed mid-run the already-submitted slices remain open on " +
-    "the exchange and the remainder is abandoned (logged on shutdown). " +
+    "fired. If the process stops mid-run, the already-submitted slices remain open on the exchange and the " +
+    "remainder is not sent; after a restart hl_execution_status shows the plan as interrupted. " +
     EXEC_DISCLAIMER,
   inputSchema: {
     coin: z.string(),
