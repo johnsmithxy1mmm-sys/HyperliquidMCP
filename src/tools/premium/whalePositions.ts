@@ -1,7 +1,8 @@
 import { z } from "zod";
 import type { ToolDef } from "../registry.js";
 import { resolveCohort } from "../../hl/cohort.js";
-import { fetchCohortAccounts, aggregateByCoin, ANALYTICS_DISCLAIMER } from "../../hl/whales.js";
+import { fetchCohortAccounts, aggregateByCoin, cohortSizeFor, dexArg, ANALYTICS_DISCLAIMER } from "../../hl/whales.js";
+import { dexOf } from "../../hl/markets.js";
 import { round, shortHash } from "../../core/format.js";
 
 export const whalePositions: ToolDef = {
@@ -14,7 +15,11 @@ export const whalePositions: ToolDef = {
     "Cohort = `cohort` arg or HL_WHALE_ADDRESSES. " +
     ANALYTICS_DISCLAIMER,
   inputSchema: {
-    coin: z.string().optional().describe("Restrict to one coin; omit for all coins the cohort holds."),
+    coin: z.string().optional().describe("Restrict to one coin (a HIP-3 coin like 'xyz:XYZ100' reads its own dex); omit for all coins."),
+    dex: z
+      .string()
+      .optional()
+      .describe("Perp dex: omit for the main dex, a HIP-3 builder dex name (e.g. 'xyz'), or 'all' for every dex (at most 20 wallets)."),
     cohort: z.array(z.string()).optional().describe("Explicit list of 0x wallet addresses."),
     topN: z.number().int().min(1).max(200).default(50).describe("Max wallets to include from the cohort."),
   },
@@ -22,16 +27,21 @@ export const whalePositions: ToolDef = {
     source: z.string(),
     walletsQueried: z.number(),
     walletsRequested: z.number(),
+    dex: z.string(),
+    walletsCappedTo: z.number().nullable(),
     asOf: z.number(),
     coins: z.array(z.record(z.any())),
     disclaimer: z.string(),
   },
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   run: async (args, ctx) => {
-    const coinFilter = (args.coin as string | undefined)?.toUpperCase();
-    const topN = (args.topN as number) ?? 50;
-    const cohort = await resolveCohort(ctx, args.cohort as string[] | undefined, topN);
-    const accounts = await fetchCohortAccounts(ctx, cohort.addresses);
+    const coinArg = args.coin as string | undefined;
+    const coinFilter = coinArg?.toUpperCase();
+    // A coin names its own dex: "xyz:XYZ100" lives on xyz, "BTC" on the main dex.
+    const dex = coinArg ? dexOf(coinArg) : dexArg(args.dex);
+    const size = cohortSizeFor(dex, (args.topN as number) ?? 50);
+    const cohort = await resolveCohort(ctx, args.cohort as string[] | undefined, size.topN);
+    const accounts = await fetchCohortAccounts(ctx, cohort.addresses, dex);
     const agg = aggregateByCoin(accounts);
     // A wallet that failed to load would read as an exit: a partial cohort is
     // neither compared against nor recorded as a baseline.
@@ -68,6 +78,8 @@ export const whalePositions: ToolDef = {
         source: cohort.source,
         walletsQueried: accounts.length,
         walletsRequested: cohort.addresses.length,
+        dex: dex ?? "main",
+        walletsCappedTo: size.cappedTo,
         asOf: now,
         coins: enriched,
         disclaimer: ANALYTICS_DISCLAIMER,

@@ -176,25 +176,33 @@ export class AlertEngine {
     _now: number,
   ): Promise<Map<string, number>> {
     const out = new Map<string, number>();
-    const cohorts = new Map<string, string[] | undefined>();
+    // Per cohort, only the dexes its alerts' coins live on (undefined = main dex).
+    const cohorts = new Map<string, { cohort: string[] | undefined; dexes: Set<string | undefined> }>();
     for (const a of alerts) {
-      if (a.type === "whale_net_flip") cohorts.set(whaleKey(a.params.cohort), a.params.cohort);
+      if (a.type !== "whale_net_flip") continue;
+      const key = whaleKey(a.params.cohort);
+      const entry = cohorts.get(key) ?? { cohort: a.params.cohort, dexes: new Set<string | undefined>() };
+      entry.dexes.add(a.params.coin ? dexOf(a.params.coin) : undefined);
+      cohorts.set(key, entry);
     }
-    for (const [key, cohort] of cohorts) {
+    for (const [key, { cohort, dexes }] of cohorts) {
       try {
         const resolved = await resolveCohort(this.ctxForCohort, cohort, 100);
-        const accounts = await fetchCohortAccounts(this.ctxForCohort, resolved.addresses);
-        // A wallet that failed to load would read as an exit and could flip the
-        // cohort's sign into a signed signal; skip the cohort this tick instead.
-        if (accounts.length < resolved.addresses.length) {
-          log.warn("whale alert cohort incomplete; skipped this tick", {
-            fetched: accounts.length,
-            requested: resolved.addresses.length,
-          });
-          continue;
+        for (const dex of dexes) {
+          const accounts = await fetchCohortAccounts(this.ctxForCohort, resolved.addresses, dex);
+          // A wallet that failed to load would read as an exit and could flip the
+          // cohort's sign into a signed signal; skip this dex this tick instead.
+          if (accounts.length < resolved.addresses.length) {
+            log.warn("whale alert cohort incomplete; skipped this tick", {
+              dex,
+              fetched: accounts.length,
+              requested: resolved.addresses.length,
+            });
+            continue;
+          }
+          const agg = aggregateByCoin(accounts);
+          for (const [coin, c] of agg) out.set(`${key}:${coin}`, c.netNtlUsd);
         }
-        const agg = aggregateByCoin(accounts);
-        for (const [coin, c] of agg) out.set(`${key}:${coin}`, c.netNtlUsd);
       } catch (err) {
         log.warn("whale alert cohort failed", { err: String(err) });
       }

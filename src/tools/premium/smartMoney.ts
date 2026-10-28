@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { ToolDef } from "../registry.js";
 import { resolveCohort } from "../../hl/cohort.js";
-import { fetchCohortAccounts, ANALYTICS_DISCLAIMER } from "../../hl/whales.js";
+import { fetchCohortAccounts, cohortSizeFor, dexArg, ANALYTICS_DISCLAIMER } from "../../hl/whales.js";
 import { analyzeCohort } from "../../smartmoney/analyze.js";
 import { scoreTrader } from "../../smartmoney/score.js";
 import { detectCoordination, MIN_COINS_FOR_SIMILARITY, type WalletVector } from "../../smartmoney/coordination.js";
@@ -114,21 +114,28 @@ export const coordinationScan: ToolDef = {
     cohort: z.array(z.string()).optional(),
     topN: z.number().int().min(2).max(150).default(80),
     threshold: z.number().min(0.5).max(1).default(0.9).describe("Cosine similarity to link two wallets."),
+    dex: z
+      .string()
+      .optional()
+      .describe("Perp dex: omit for the main dex, a HIP-3 builder dex name (e.g. 'xyz'), or 'all' for every dex (at most 20 wallets)."),
   },
   outputSchema: {
     source: z.string(),
     walletsQueried: z.number(),
     walletsCompared: z.number(),
+    dex: z.string(),
+    walletsCappedTo: z.number().nullable(),
     clusters: z.array(z.array(z.string())),
     pairs: z.array(z.record(z.any())),
     disclaimer: z.string(),
   },
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   run: async (args, ctx) => {
-    const topN = (args.topN as number) ?? 80;
+    const dex = dexArg(args.dex);
+    const size = cohortSizeFor(dex, (args.topN as number) ?? 80);
     const threshold = (args.threshold as number) ?? 0.9;
-    const cohort = await resolveCohort(ctx, args.cohort as string[] | undefined, topN);
-    const accounts = await fetchCohortAccounts(ctx, cohort.addresses);
+    const cohort = await resolveCohort(ctx, args.cohort as string[] | undefined, size.topN);
+    const accounts = await fetchCohortAccounts(ctx, cohort.addresses, dex);
 
     const wallets: WalletVector[] = accounts
       .map(({ address, account }) => {
@@ -153,6 +160,8 @@ export const coordinationScan: ToolDef = {
         source: cohort.source,
         walletsQueried: accounts.length,
         walletsCompared: compared,
+        dex: dex ?? "main",
+        walletsCappedTo: size.cappedTo,
         clusters,
         pairs,
         disclaimer: ANALYTICS_DISCLAIMER,
