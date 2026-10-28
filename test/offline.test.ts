@@ -2569,3 +2569,76 @@ test("hl_set_webhook validates the URL and returns the signing secret once", asy
   assert.match((data as { secret: string }).secret, /^[0-9a-f]{64}$/);
   assert.equal((removed.data as { deleted: boolean }).deleted, true);
 });
+
+/** walletWithBtc with the position on another coin, e.g. the HIP-3 "xyz:XYZ100". */
+function walletWith(coin: string, szi: number, liquidationPx: string | null = null) {
+  const s = walletWithBtc(szi);
+  return { ...s, assetPositions: s.assetPositions.map((p) => ({ ...p, position: { ...p.position, coin, liquidationPx } })) };
+}
+
+/** Main dex holds BTC long; the "xyz" dex holds XYZ100 with the given size. */
+function hip3WhaleCtx(xyzSzi = 1) {
+  const hl = hip3Hl({
+    perpDexs: async () => [null, { name: "xyz" }],
+    clearinghouseState: async (_user: string, dex?: string) => (dex === "xyz" ? walletWith("xyz:XYZ100", xyzSzi, "25000") : walletWithBtc(1)),
+  });
+  return { hl, snapshots: new InMemorySnapshotStore(), store: { cohort: { get: () => null } } } as unknown as ToolContext;
+}
+
+const WHALE = "0x1111111111111111111111111111111111111111";
+
+test("hl_liquidation_map for a HIP-3 coin reads the cohort's positions on that coin's dex", async () => {
+  const { liquidationMap } = await import("../src/tools/premium/liquidationMap.js");
+
+  const { data } = await liquidationMap.run({ coin: "xyz:XYZ100", cohort: [WHALE] }, hip3WhaleCtx());
+
+  assert.equal((data as { positionsConsidered: number }).positionsConsidered, 1);
+});
+
+test("hl_whale_positions for a HIP-3 coin aggregates that dex's positions", async () => {
+  const { data } = await whalePositions.run({ coin: "xyz:XYZ100", cohort: [WHALE] }, hip3WhaleCtx());
+
+  assert.deepEqual((data as { coins: Array<{ coin: string }> }).coins.map((c) => c.coin), ["xyz:XYZ100"]);
+});
+
+test("whale tools over every dex cap the cohort so one call cannot spend the whole rate budget", async () => {
+  const cohort = Array.from({ length: 30 }, (_, i) => `0x${String(i + 1).padStart(40, "0")}`);
+
+  const { data } = await whalePositions.run({ dex: "all", cohort, topN: 30 }, hip3WhaleCtx());
+
+  const out = data as { walletsRequested: number; walletsCappedTo: number | null; coins: Array<{ coin: string }> };
+  assert.equal(out.walletsRequested, 20);
+  assert.equal(out.walletsCappedTo, 20);
+  assert.deepEqual(out.coins.map((c) => c.coin).sort(), ["BTC", "xyz:XYZ100"]);
+});
+
+test("whale flow on one HIP-3 dex does not report the cohort's main-dex coins as fully exited", async () => {
+  const ctx = hip3WhaleCtx();
+  // An hour ago the same cohort was scanned on the main dex and held BTC.
+  (ctx.snapshots as InMemorySnapshotStore).record("whaleFlow", `BTC:${shortHash(WHALE)}`, { netNtlUsd: 60_000 }, Date.now() - 3_600_000);
+
+  const { data } = await whaleFlowAlerts.run({ dex: "xyz", cohort: [WHALE], thresholdUsd: 1_000, lookbackMinutes: 60 }, ctx);
+
+  const out = data as { dex: string; alerts: Array<{ coin: string }> };
+  assert.equal(out.dex, "xyz");
+  assert.deepEqual(out.alerts.map((a) => a.coin), []);
+});
+
+test("whale_net_flip on a HIP-3 coin fires from that dex's cohort positions", async () => {
+  const alert: AlertRecord = {
+    id: "h", subject: "s", type: "whale_net_flip", params: { coin: "xyz:XYZ100", cohort: [WHALE] },
+    enabled: true, cooldownMinutes: 5, lastFiredAt: null, lastState: { sign: -1 }, createdAt: 0,
+  };
+  const store = {
+    alerts: { listActive: () => [alert], updateState: () => undefined, recordFired: () => undefined },
+    signals: { dueForScoring: () => [], record: () => undefined },
+    snapshots: { record: () => undefined },
+    scores: { due: () => [] },
+  } as unknown as Warehouse;
+  const ctx = hip3WhaleCtx(); // the cohort is now net long XYZ100
+  const signer = { sign: () => ({ signature: "sig" }) } as unknown as SignalSigner;
+
+  const fired = await new AlertEngine(ctx.hl, store, signer, { ...ctx, store } as unknown as ToolContext).tick(1_000_000);
+
+  assert.equal(fired, 1);
+});

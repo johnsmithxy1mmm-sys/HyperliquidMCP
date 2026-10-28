@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { ToolDef } from "../registry.js";
 import { resolveCohort } from "../../hl/cohort.js";
 import { fetchCohortAccounts, ANALYTICS_DISCLAIMER } from "../../hl/whales.js";
-import { resolveMarket } from "../../hl/markets.js";
+import { resolveMarket, dexOf } from "../../hl/markets.js";
 import { round } from "../../core/format.js";
 
 /**
@@ -49,7 +49,7 @@ export const liquidationMap: ToolDef = {
     const market = await resolveMarket(ctx.hl, coinArg);
     const mark = market.markPx;
     const cohort = await resolveCohort(ctx, args.cohort as string[] | undefined, topN);
-    const accounts = await fetchCohortAccounts(ctx, cohort.addresses);
+    const accounts = await fetchCohortAccounts(ctx, cohort.addresses, dexOf(market.coin));
 
     interface Bin {
       lowPct: number;

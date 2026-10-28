@@ -4,7 +4,7 @@
  * hl_whale_flow_alerts, and hl_liquidation_map.
  */
 import type { ToolContext } from "../tools/registry.js";
-import { normalizeAccount, type NormalizedAccount, type NormalizedPosition } from "./account.js";
+import { normalizeAccount, accountStateFor, type NormalizedAccount, type NormalizedPosition } from "./account.js";
 import { round } from "../core/format.js";
 import { log } from "../logger.js";
 
@@ -13,8 +13,28 @@ export interface CohortAccount {
   account: NormalizedAccount;
 }
 
-/** Fetch accounts with bounded concurrency; failed wallets are skipped (graceful). */
-export async function fetchCohortAccounts(ctx: ToolContext, addresses: string[], concurrency = 5): Promise<CohortAccount[]> {
+/**
+ * Wallets a whale tool may query on dex "all": each wallet costs one request per
+ * dex (11 live), so 20 wallets stay well under the per-minute rate budget.
+ */
+export const MAX_WALLETS_ALL_DEXES = 20;
+
+/** Cohort size to query for `dex`, and the cap applied (null when none was). */
+export function cohortSizeFor(dex: string | undefined, topN: number): { topN: number; cappedTo: number | null } {
+  if (dex !== "all" || topN <= MAX_WALLETS_ALL_DEXES) return { topN, cappedTo: null };
+  return { topN: MAX_WALLETS_ALL_DEXES, cappedTo: MAX_WALLETS_ALL_DEXES };
+}
+
+/**
+ * Fetch accounts on the main dex (no `dex`), one HIP-3 dex, or "all", with
+ * bounded concurrency; failed wallets are skipped (graceful).
+ */
+export async function fetchCohortAccounts(
+  ctx: ToolContext,
+  addresses: string[],
+  dex?: string,
+  concurrency = 5,
+): Promise<CohortAccount[]> {
   const out: CohortAccount[] = [];
   let i = 0;
   async function worker(): Promise<void> {
@@ -22,7 +42,7 @@ export async function fetchCohortAccounts(ctx: ToolContext, addresses: string[],
       const idx = i++;
       const address = addresses[idx];
       try {
-        const state = await ctx.hl.clearinghouseState(address);
+        const state = await accountStateFor(ctx.hl, address, dex);
         out.push({ address, account: normalizeAccount(state) });
       } catch (err) {
         log.warn("cohort wallet fetch failed", { address, err: String(err) });

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { ToolDef } from "../registry.js";
 import { resolveCohort } from "../../hl/cohort.js";
-import { fetchCohortAccounts, aggregateByCoin, ANALYTICS_DISCLAIMER } from "../../hl/whales.js";
+import { fetchCohortAccounts, aggregateByCoin, cohortSizeFor, ANALYTICS_DISCLAIMER } from "../../hl/whales.js";
 import { round, shortHash } from "../../core/format.js";
 
 /**
@@ -28,11 +28,17 @@ export const whaleFlowAlerts: ToolDef = {
     topN: z.number().int().min(1).max(200).default(50),
     thresholdUsd: z.number().min(0).default(250_000).describe("Min absolute net-notional change to alert on."),
     lookbackMinutes: z.number().int().min(5).max(1440).default(60).describe("Compare against a snapshot ~this old."),
+    dex: z
+      .string()
+      .optional()
+      .describe("Perp dex: omit for the main dex, a HIP-3 builder dex name (e.g. 'xyz'), or 'all' for every dex (at most 20 wallets)."),
   },
   outputSchema: {
     source: z.string(),
     walletsQueried: z.number(),
     walletsRequested: z.number(),
+    dex: z.string(),
+    walletsCappedTo: z.number().nullable(),
     lookbackMinutes: z.number(),
     baselineFound: z.boolean(),
     alerts: z.array(z.record(z.any())),
@@ -40,13 +46,14 @@ export const whaleFlowAlerts: ToolDef = {
   },
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   run: async (args, ctx) => {
-    const topN = (args.topN as number) ?? 50;
+    const dex = args.dex as string | undefined;
+    const size = cohortSizeFor(dex, (args.topN as number) ?? 50);
     const thresholdUsd = (args.thresholdUsd as number) ?? 250_000;
     const lookbackMinutes = (args.lookbackMinutes as number) ?? 60;
     const lookbackMs = lookbackMinutes * 60_000;
 
-    const cohort = await resolveCohort(ctx, args.cohort as string[] | undefined, topN);
-    const accounts = await fetchCohortAccounts(ctx, cohort.addresses);
+    const cohort = await resolveCohort(ctx, args.cohort as string[] | undefined, size.topN);
+    const accounts = await fetchCohortAccounts(ctx, cohort.addresses, dex);
     const walletsRequested = cohort.addresses.length;
     // A wallet that failed to load would read as a full exit; neither compare
     // nor record a partial cohort.
@@ -59,6 +66,8 @@ export const whaleFlowAlerts: ToolDef = {
           source: cohort.source,
           walletsQueried: accounts.length,
           walletsRequested,
+          dex: dex ?? "main",
+          walletsCappedTo: size.cappedTo,
           lookbackMinutes,
           baselineFound: false,
           alerts: [],
@@ -67,7 +76,8 @@ export const whaleFlowAlerts: ToolDef = {
       };
     }
     const agg = aggregateByCoin(accounts);
-    const cohortKey = shortHash(cohort.addresses.slice().sort().join(","));
+    // Scoped by dex: a coin missing from one dex's scan is not an exit from another dex.
+    const cohortKey = shortHash(cohort.addresses.slice().sort().join(",") + (dex ? `|${dex}` : ""));
     const now = Date.now();
 
     const alerts: Array<Record<string, unknown>> = [];
@@ -122,6 +132,8 @@ export const whaleFlowAlerts: ToolDef = {
         source: cohort.source,
         walletsQueried: accounts.length,
         walletsRequested,
+        dex: dex ?? "main",
+        walletsCappedTo: size.cappedTo,
         lookbackMinutes,
         baselineFound,
         alerts,
