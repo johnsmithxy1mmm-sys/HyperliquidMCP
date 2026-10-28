@@ -12,8 +12,9 @@
 
 export interface ScoredOutcome {
   score: number;
-  /** Realized PnL over the forward window (deposit-immune, from fills). */
-  forwardPnl: number;
+  /** Realized PnL over the forward window (deposit-immune, from fills) divided by the
+   *  account value when sampled, so account size alone cannot correlate with it. */
+  forwardReturn: number;
 }
 
 export interface CalibrationReport {
@@ -23,8 +24,8 @@ export interface CalibrationReport {
   spearman: number | null;
   /** Two-sided p-value approximation; null when n < 10. */
   pValue: number | null;
-  /** Mean forward PnL per score quartile, lowest first. */
-  quartiles: Array<{ quartile: number; scoreRange: [number, number]; meanForwardPnl: number; n: number }>;
+  /** Mean forward return per score quartile, lowest first. */
+  quartiles: Array<{ quartile: number; scoreRange: [number, number]; meanForwardReturn: number; n: number }>;
   /**
    * Plain-language verdict for API consumers. `inverted` is reported rather
    * than folded into `no_evidence`: a significant NEGATIVE correlation is a
@@ -141,7 +142,7 @@ function logGamma(x: number): number {
 
 export function calibrate(observations: ScoredOutcome[]): CalibrationReport {
   const usable = observations.filter(
-    (o) => Number.isFinite(o.score) && Number.isFinite(o.forwardPnl),
+    (o) => Number.isFinite(o.score) && Number.isFinite(o.forwardReturn),
   );
   const n = usable.length;
   if (n < 4) {
@@ -150,7 +151,7 @@ export function calibrate(observations: ScoredOutcome[]): CalibrationReport {
 
   const r = spearman(
     usable.map((o) => o.score),
-    usable.map((o) => o.forwardPnl),
+    usable.map((o) => o.forwardReturn),
   );
   const p = r === null ? null : spearmanPValue(r, n);
 
@@ -165,7 +166,7 @@ export function calibrate(observations: ScoredOutcome[]): CalibrationReport {
       quartiles.push({
         quartile: q + 1,
         scoreRange: [slice[0].score, slice[slice.length - 1].score],
-        meanForwardPnl: slice.reduce((s, o) => s + o.forwardPnl, 0) / slice.length,
+        meanForwardReturn: slice.reduce((s, o) => s + o.forwardReturn, 0) / slice.length,
         n: slice.length,
       });
     }
@@ -176,7 +177,8 @@ export function calibrate(observations: ScoredOutcome[]): CalibrationReport {
     const significant = p !== null && p < 0.05;
     if (significant && r > 0.2) verdict = "positive";
     else if (significant && r < -0.2) verdict = "inverted";
-    else if (r > 0.1) verdict = "weak_positive";
+    // Weak still has to be significant: an r of 0.13 at p 0.4 is noise.
+    else if (significant && r > 0.1) verdict = "weak_positive";
     else verdict = "no_evidence";
   }
 

@@ -165,16 +165,20 @@ export class ScoreStore {
       .run(forwardPnl, resolvedAt, id);
   }
 
-  /** Resolved (score, outcome) pairs for calibration. */
+  /**
+   * Resolved (score, outcome) pairs for calibration. The outcome is a return on
+   * the account value at sampling time: the score rewards account size, so raw
+   * USD PnL would correlate with it through size alone.
+   */
   outcomes(limit = 5000): ScoredOutcome[] {
     const rows = this.db
       .prepare(
-        `SELECT score, forward_pnl FROM score_snapshots
-         WHERE resolved_at IS NOT NULL AND forward_pnl IS NOT NULL
+        `SELECT score, forward_pnl, account_value FROM score_snapshots
+         WHERE resolved_at IS NOT NULL AND forward_pnl IS NOT NULL AND account_value > 0
          ORDER BY ts DESC LIMIT ?`,
       )
-      .all(limit) as Array<{ score: number; forward_pnl: number }>;
-    return rows.map((r) => ({ score: r.score, forwardPnl: r.forward_pnl }));
+      .all(limit) as Array<{ score: number; forward_pnl: number; account_value: number }>;
+    return rows.map((r) => ({ score: r.score, forwardReturn: r.forward_pnl / r.account_value }));
   }
 
   counts(): { total: number; resolved: number; pending: number } {

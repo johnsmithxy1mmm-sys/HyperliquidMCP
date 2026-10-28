@@ -17,7 +17,8 @@ import { sharpe, sortino, maxDrawdown, annualizeHourlyFunding, paginate, round, 
 import { assertExchangeOk, TradingService } from "../src/trading/exchange.js";
 import { getDb, upsertKey, getKey, disableMissingBootstrapKeys } from "../src/billing/db.js";
 import type { Config } from "../src/config.js";
-import type { HyperliquidClient } from "../src/core/hlClient.js";
+import { HyperliquidClient } from "../src/core/hlClient.js";
+import { RateLimiter } from "../src/core/rateLimiter.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { planTwap, planIceberg, planMirror } from "../src/execution/plan.js";
@@ -56,6 +57,7 @@ import { ipBucket, TRUST_PROXY_SETTING } from "../src/core/clientIp.js";
 import { requestFreeKey } from "../src/tools/free/requestFreeKey.js";
 import { whaleFlowAlerts } from "../src/tools/premium/whaleFlowAlerts.js";
 import { whalePositions } from "../src/tools/premium/whalePositions.js";
+import { smartMoneyScore } from "../src/tools/premium/smartMoney.js";
 
 test("formatSize rounds to szDecimals", () => {
   assert.equal(formatSize(1.23456789, 3), "1.235");
@@ -545,22 +547,22 @@ test("spearman detects monotone relationships regardless of linearity", () => {
 
 test("calibrate is honest when evidence is thin and positive when it is strong", () => {
   assert.equal(calibrate([]).verdict, "insufficient_data");
-  assert.equal(calibrate([{ score: 1, forwardPnl: 1 }]).verdict, "insufficient_data");
+  assert.equal(calibrate([{ score: 1, forwardReturn: 1 }]).verdict, "insufficient_data");
 
   // 40 observations where score tracks outcome => should register as positive
-  const strong = Array.from({ length: 40 }, (_, i) => ({ score: i, forwardPnl: i * 100 }));
+  const strong = Array.from({ length: 40 }, (_, i) => ({ score: i, forwardReturn: i * 100 }));
   const good = calibrate(strong);
   assert.equal(good.verdict, "positive");
   assert.ok((good.spearman ?? 0) > 0.9);
   assert.ok((good.pValue ?? 1) < 0.05);
   assert.equal(good.quartiles.length, 4);
   // quartiles must be ordered lowest-score-first with rising outcomes
-  assert.ok(good.quartiles[3].meanForwardPnl > good.quartiles[0].meanForwardPnl);
+  assert.ok(good.quartiles[3].meanForwardReturn > good.quartiles[0].meanForwardReturn);
 
   // score unrelated to outcome => must NOT claim predictive power
   const noise = [3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5, 8, 9, 7, 9, 3, 2, 3, 8, 4,
                  6, 2, 6, 4, 3, 3, 8, 3, 2, 7, 9, 5, 0, 2, 8, 8, 4, 1, 9, 7];
-  const flat = calibrate(noise.map((v, i) => ({ score: i, forwardPnl: v })));
+  const flat = calibrate(noise.map((v, i) => ({ score: i, forwardReturn: v })));
   assert.notEqual(flat.verdict, "positive");
 });
 
@@ -591,7 +593,7 @@ test("spearman p-value matches reference values (not their complement)", () => {
 
 test("calibrate reports an inverted score instead of hiding it as no_evidence", () => {
   // Score perfectly ANTI-correlated with outcome: a finding, not an absence.
-  const inverted = Array.from({ length: 40 }, (_, i) => ({ score: i, forwardPnl: -i * 100 }));
+  const inverted = Array.from({ length: 40 }, (_, i) => ({ score: i, forwardReturn: -i * 100 }));
   const report = calibrate(inverted);
   assert.equal(report.verdict, "inverted");
   assert.ok((report.spearman ?? 0) < -0.9);
@@ -1380,4 +1382,83 @@ test("a deploy with both key env vars empty does not revoke every bootstrap key"
   }
 
   assert.equal(getKey(db, keyHash)?.disabled, 0, "a missing secret must not lock out every paying customer");
+});
+
+test("hyperliquid client charges the documented info request weights", async () => {
+  const charged: number[] = [];
+  const realAcquire = RateLimiter.prototype.acquire;
+  const realFetch = globalThis.fetch;
+  RateLimiter.prototype.acquire = async function (weight?: number) {
+    charged.push(weight ?? 1);
+  };
+  globalThis.fetch = (async (_url: unknown, init?: { body?: unknown }) => {
+    const body = JSON.parse(String(init?.body));
+    const fills = Array.from({ length: 45 }, (_, i) => ({ tid: i, hash: "h", time: 1, coin: "BTC", px: "1", sz: "1" }));
+    return new Response(JSON.stringify(body.type === "userFillsByTime" ? fills : [{ universe: [] }, []]), { status: 200 });
+  }) as typeof fetch;
+  try {
+    const hl = new HyperliquidClient({
+      infoBaseUrl: "http://hl.test/info", requestTimeoutMs: 1000, maxRetries: 0, rateWeightPerMin: 1200,
+    } as unknown as Config);
+    await hl.metaAndAssetCtxs();
+    await hl.userFillsByTime("0xabc", 0, 1);
+  } finally {
+    RateLimiter.prototype.acquire = realAcquire;
+    globalThis.fetch = realFetch;
+  }
+
+  // Hyperliquid docs: most info requests weigh 20; fill endpoints add 1 per 20 items returned.
+  assert.deepEqual(charged, [20, 20, 2]);
+});
+
+test("a paid hl_smart_money_score call does not make the daily calibration sample skip", async () => {
+  const scores = new ScoreStore(new BetterSqlite3(":memory:"));
+  const cohortAddresses = [
+    "0x5555555555555555555555555555555555555555",
+    "0x6666666666666666666666666666666666666666",
+    "0x7777777777777777777777777777777777777777",
+  ];
+  const ctx = {
+    config: { whaleAddresses: cohortAddresses, leaderboardUrl: undefined, requestTimeoutMs: 1000 },
+    hl: {
+      userFillsByTime: async () => [],
+      clearinghouseState: async () => walletWithBtc(1),
+    },
+    store: { cohort: { get: () => null }, scores },
+  } as unknown as ToolContext;
+
+  // A caller asks for the top 3 over a 7-day lookback.
+  await smartMoneyScore.run({ topN: 3, lookbackDays: 7 }, ctx);
+  const sample = await new ScoreSampler(ctx).runOnce(Date.now());
+
+  assert.equal(sample.skipped, false, "the sampler, not a caller's query, decides what enters the calibration");
+});
+
+test("calibration outcomes are returns on the sampled account, not raw USD PnL", () => {
+  const store = new ScoreStore(new BetterSqlite3(":memory:"));
+  store.record({ address: "0xbig", score: 90, accountValue: 1_000_000, horizonDays: 30, ts: 1_000 });
+  store.record({ address: "0xsmall", score: 10, accountValue: 10_000, horizonDays: 30, ts: 2_000 });
+  store.record({ address: "0xempty", score: 50, accountValue: 0, horizonDays: 30, ts: 3_000 });
+  for (const row of store.due(10, 365 * 86_400_000)) {
+    const pnl = { "0xbig": 10_000, "0xsmall": 1_000, "0xempty": 500 }[row.address] ?? 0;
+    store.setOutcome(row.id, pnl);
+  }
+
+  // $10k on $1M is 1%; $1k on $10k is 10%. Raw USD would rank the big account first.
+  const outcomes = store.outcomes().sort((a, b) => a.score - b.score);
+
+  assert.deepEqual(outcomes, [
+    { score: 10, forwardReturn: 0.1 },
+    { score: 90, forwardReturn: 0.01 },
+  ]);
+});
+
+test("an insignificant small positive correlation is no evidence, not weak_positive", () => {
+  const observations = Array.from({ length: 40 }, (_, i) => ({ score: i, forwardReturn: (i + 7) % 40 }));
+
+  const report = calibrate(observations);
+
+  // r ≈ 0.13 with p ≈ 0.41: indistinguishable from noise.
+  assert.ok((report.pValue ?? 0) > 0.05);
+  assert.equal(report.verdict, "no_evidence");
 });
