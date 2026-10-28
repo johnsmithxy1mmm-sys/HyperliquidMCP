@@ -3,7 +3,6 @@ import type { ToolDef, ToolContext } from "../registry.js";
 import { ToolError } from "../../core/errors.js";
 import { resolveMarket } from "../../hl/markets.js";
 import { normalizeAccount } from "../../hl/account.js";
-import { addressForKey } from "../../trading/signing.js";
 import { assertAddress, round } from "../../core/format.js";
 import { planTwap, planMirror, type MirrorPositionInput } from "../../execution/plan.js";
 
@@ -161,10 +160,11 @@ export const copyWallet: ToolDef = {
 
     // My own account: needed BOTH for equity and for the positions I already
     // hold. Without the latter every call re-mirrors the full position.
+    // Read the account the orders execute on (HL_ACCOUNT_ADDRESS for an API
+    // wallet): the agent address itself holds nothing and reads as zero equity.
     let myAccount = null as ReturnType<typeof normalizeAccount> | null;
-    if (ctx.config.agentPrivateKey) {
-      myAccount = normalizeAccount(await ctx.hl.clearinghouseState(addressForKey(ctx.config.agentPrivateKey)));
-    }
+    const account = trading.tradingAccount();
+    if (account) myAccount = normalizeAccount(await ctx.hl.clearinghouseState(account));
 
     // Submitting without knowing what we already hold would silently fall back
     // to mirroring the full position — the exact compounding this tool must not

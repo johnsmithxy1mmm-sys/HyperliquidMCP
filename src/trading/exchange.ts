@@ -181,23 +181,39 @@ export class TradingService {
     return this.execute(action, null, opts);
   }
 
+  /**
+   * The account orders execute on and whose positions/equity to read:
+   * HL_ACCOUNT_ADDRESS when the agent key is an API wallet, else the key's own
+   * address. An API wallet only signs; querying it returns an empty account.
+   */
+  tradingAccount(): string | undefined {
+    const configured = this.config.accountAddress;
+    if (configured) {
+      if (!isAddress(configured)) {
+        throw new ToolError("bad_account_address", `HL_ACCOUNT_ADDRESS "${configured}" is not a 0x address.`);
+      }
+      return configured;
+    }
+    return this.config.agentPrivateKey ? addressForKey(this.config.agentPrivateKey) : undefined;
+  }
+
   /** Close a position by submitting a reduce-only IOC market order for its full size. */
   async closePosition(coin: string, opts: ExecOptions, address?: string): Promise<ExecResult> {
-    // A submitted order ALWAYS executes on the agent wallet's own account, so
-    // sizing it from a different address's position would send a wrong-sized
-    // order. Foreign addresses are allowed for dry-run previews only.
-    if (address && opts.confirm && !opts.dryRun && this.config.agentPrivateKey) {
-      const agent = addressForKey(this.config.agentPrivateKey).toLowerCase();
-      if (address.toLowerCase() !== agent) {
+    // A submitted order ALWAYS executes on the trading account, so sizing it
+    // from a different address's position would send a wrong-sized order.
+    // Foreign addresses are allowed for dry-run previews only.
+    const account = this.tradingAccount();
+    if (address && opts.confirm && !opts.dryRun && account) {
+      if (address.toLowerCase() !== account.toLowerCase()) {
         throw new ToolError(
           "address_mismatch",
-          `Submitting closes only the agent wallet's own positions (${agent.slice(0, 10)}…). ` +
+          `Submitting closes only the trading account's own positions (${account.slice(0, 10)}…). ` +
             `Omit 'address' to close your own position, or keep dryRun=true to preview another wallet.`,
-          { agentAddress: agent, requestedAddress: address },
+          { tradingAccount: account, requestedAddress: address },
         );
       }
     }
-    const who = address ?? (this.config.agentPrivateKey ? addressForKey(this.config.agentPrivateKey) : undefined);
+    const who = address ?? account;
     if (!who) throw new ToolError("no_address", "Provide `address`, or set HL_AGENT_PRIVATE_KEY to infer it.");
     const state = await this.hl.clearinghouseState(who);
     const market = await resolveMarket(this.hl, coin);

@@ -43,6 +43,11 @@ export interface Config {
   agentPrivateKey: string | undefined;
   /** Largest notional (USD) one non-reduce-only order may carry; the model cannot raise it. */
   maxOrderNotionalUsd: number;
+  /**
+   * The account the agent (API) wallet trades for. Hyperliquid keeps positions
+   * and equity on that account, not on the agent address that only signs.
+   */
+  accountAddress: string | undefined;
 
   /** Whale-cohort default address list (comma-separated env), used when a tool omits `cohort`. */
   whaleAddresses: string[];
@@ -138,6 +143,7 @@ export function loadConfig(): Config {
     tradingEnabled: envBool("HL_ENABLE_TRADING", false),
     agentPrivateKey: process.env.HL_AGENT_PRIVATE_KEY?.trim() || undefined,
     maxOrderNotionalUsd: envNumClamped("HL_MAX_ORDER_NOTIONAL_USD", 10_000, 1, 1_000_000_000),
+    accountAddress: process.env.HL_ACCOUNT_ADDRESS?.trim() || undefined,
 
     whaleAddresses: envList("HL_WHALE_ADDRESSES"),
     leaderboardUrl: process.env.HL_LEADERBOARD_URL?.trim() || undefined,
