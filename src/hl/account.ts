@@ -61,6 +61,12 @@ export function normalizeAccount(state: ClearinghouseState): NormalizedAccount {
   };
 }
 
+/** A `dex` argument as the API names it: lowercase, and "main" (what outputs report) is the main dex. */
+export function dexArg(raw: unknown): string | undefined {
+  const dex = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  return dex && dex !== "main" ? dex : undefined;
+}
+
 /**
  * Throw unless `dex` is a live HIP-3 dex: the API answers an unknown name with
  * null, which reads as an empty account or crashes the caller.
@@ -70,7 +76,7 @@ export async function assertKnownDex(hl: { perpDexs(): Promise<Array<{ name?: st
   if (names.includes(dex)) return;
   throw new ToolError(
     "unknown_dex",
-    `Unknown perp dex "${dex}". Known HIP-3 dexes: ${names.join(", ")}. Omit dex for the main dex, or pass "all".`,
+    `Unknown perp dex "${dex}". Known HIP-3 dexes: ${names.join(", ")}. Omit dex for the main dex.`,
     { knownDexs: names },
   );
 }

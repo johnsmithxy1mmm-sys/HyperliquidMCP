@@ -7,6 +7,7 @@ import type { HyperliquidClient } from "../core/hlClient.js";
 import type { AssetMeta, AssetCtx } from "./types.js";
 import { num, annualizeHourlyFunding } from "../core/format.js";
 import { unknownCoin } from "../core/errors.js";
+import { assertKnownDex } from "./account.js";
 
 export interface MarketRow {
   coin: string;
@@ -59,6 +60,7 @@ export function dexOf(coin: string): string | undefined {
 
 /** Market rows of the main perp dex, or of one HIP-3 builder dex. */
 export async function getMarketRows(hl: HyperliquidClient, dex?: string): Promise<MarketRow[]> {
+  if (dex) await assertKnownDex(hl, dex);
   const [meta, ctxs] = dex ? await hl.metaAndAssetCtxsForDex(dex) : await hl.metaAndAssetCtxs();
   const rows: MarketRow[] = [];
   for (let i = 0; i < meta.universe.length; i++) {

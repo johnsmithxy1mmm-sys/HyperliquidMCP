@@ -19,12 +19,6 @@ export interface CohortAccount {
  */
 export const MAX_WALLETS_ALL_DEXES = 20;
 
-/** A `dex` argument as the API names it: lowercase, and "main" (what outputs report) is the main dex. */
-export function dexArg(raw: unknown): string | undefined {
-  const dex = typeof raw === "string" ? raw.trim().toLowerCase() : "";
-  return dex && dex !== "main" ? dex : undefined;
-}
-
 /** Cohort size to query for `dex`, and the cap applied (null when none was). */
 export function cohortSizeFor(dex: string | undefined, topN: number): { topN: number; cappedTo: number | null } {
   if (dex !== "all" || topN <= MAX_WALLETS_ALL_DEXES) return { topN, cappedTo: null };
