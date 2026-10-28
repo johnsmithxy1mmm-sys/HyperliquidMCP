@@ -12,6 +12,9 @@ import type { Config } from "../config.js";
 import type { HyperliquidClient } from "./hlClient.js";
 import { log } from "../logger.js";
 
+/** No frame for this long on a "connected" socket means it is half-open. */
+const STALE_RECONNECT_MS = 60_000;
+
 export class MidsFeed {
   private ws: WebSocket | undefined;
   private mids = new Map<string, number>();
@@ -28,6 +31,13 @@ export class MidsFeed {
   ) {}
 
   ensureConnected(): void {
+    // A half-open socket (peer gone, no FIN) never fires "close", so the feed
+    // would sit "connected" on REST fallback forever. allMids streams several
+    // times a second; a minute of silence means the connection is dead.
+    if (this.connected && Date.now() - this.lastMsgAt > STALE_RECONNECT_MS) {
+      this.onDrop("silent");
+      return;
+    }
     if (this.closed || !this.config.wsEnabled || this.connected || this.connecting) return;
     this.connecting = true;
     try {
@@ -41,6 +51,7 @@ export class MidsFeed {
         }
         this.connected = true;
         this.connecting = false;
+        this.lastMsgAt = Date.now(); // silence is measured from the open
         this.reconnectDelay = 1_000;
         ws.send(JSON.stringify({ method: "subscribe", subscription: { type: "allMids" } }));
         log.info("ws connected", { url: this.config.wsUrl });

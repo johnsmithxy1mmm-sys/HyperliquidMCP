@@ -83,7 +83,7 @@ export const ALL_TOOLS: ToolDef[] = [...FREE_TOOLS, ...PREMIUM_TOOLS, ...TRADING
 
 /** Register the given tiers' tools onto a server using the provided context. */
 export function registerTools(server: McpServer, ctx: ToolContext, tiers: Tier[]): number {
-  const selected = ALL_TOOLS.filter((t) => tiers.includes(t.tier));
+  const selected = ALL_TOOLS.filter((t) => tiers.includes(t.tier) && !(t.localOnly && ctx.mode === "http"));
   for (const def of selected) registerTool(server, def, ctx);
   return selected.length;
 }

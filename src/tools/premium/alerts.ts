@@ -8,6 +8,7 @@ import type { AlertType, AlertParams } from "../../alerts/types.js";
 import { MIN_MOVE_PCT } from "../../alerts/evaluate.js";
 
 const ALERT_TYPES = ["funding_apr", "price_move", "whale_net_flip"] as const;
+const MAX_ALERTS_PER_KEY = 20;
 
 function requireOwner(ctx: ToolContext): string {
   if (!ctx.subject || ctx.subject === "anon") {
@@ -35,13 +36,22 @@ export const createAlert: ToolDef = {
     aprThreshold: z.number().min(0).optional().describe("funding_apr: |APR| fraction (0.5 = 50%)."),
     movePct: z.number().min(MIN_MOVE_PCT).optional().describe("price_move: |return| fraction (0.05 = 5%, min 0.01)."),
     windowMinutes: z.number().int().min(5).max(1440).optional().describe("price_move lookback window."),
-    cohort: z.array(z.string()).optional().describe("whale_net_flip: 0x addresses (else HL_WHALE_ADDRESSES)."),
+    cohort: z.array(z.string()).max(100).optional().describe("whale_net_flip: up to 100 0x addresses (else HL_WHALE_ADDRESSES)."),
     cooldownMinutes: z.number().int().min(5).max(10080).default(120).describe("Min gap between re-fires."),
   },
   outputSchema: { id: z.string(), type: z.string(), coin: z.string(), cooldownMinutes: z.number() },
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   run: async (args, ctx) => {
     const subject = requireOwner(ctx);
+    // Each alert is evaluated every tick against the shared Hyperliquid budget;
+    // self-serve keys are free, so the count per key must be bounded.
+    const held = ctx.store.alerts.listActive().filter((a) => a.subject === subject).length;
+    if (held >= MAX_ALERTS_PER_KEY) {
+      throw new ToolError(
+        "too_many_alerts",
+        `This key already has ${held} active alerts (max ${MAX_ALERTS_PER_KEY}). Delete one with hl_delete_alert first.`,
+      );
+    }
     const type = args.type as AlertType;
     // Validate the coin NOW: an alert on a typo'd symbol would otherwise sit
     // silently forever without firing. Also canonicalizes the casing.

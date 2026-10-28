@@ -10,6 +10,8 @@ export interface PostOptions {
   maxRetries: number;
   /** Extra headers (e.g. for signed exchange calls). */
   headers?: Record<string, string>;
+  /** Called before each retry attempt (e.g. to charge the rate limiter again). */
+  onRetry?: () => Promise<void>;
 }
 
 const RETRIABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
@@ -23,6 +25,7 @@ export async function postJson<T>(url: string, body: unknown, opts: PostOptions)
   let lastErr: unknown;
 
   for (let attempt = 0; attempt <= opts.maxRetries; attempt++) {
+    if (attempt > 0) await opts.onRetry?.();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), opts.timeoutMs);
     try {

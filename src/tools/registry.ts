@@ -17,6 +17,7 @@ import type { SignalSigner } from "../signals/signer.js";
 import type { TradingService } from "../trading/exchange.js";
 import type { ExecutionRunner } from "../execution/runner.js";
 import { ToolError } from "../core/errors.js";
+import { randomBytes } from "node:crypto";
 import { log } from "../logger.js";
 
 export type Tier = "free" | "premium" | "trading";
@@ -92,6 +93,8 @@ export interface ToolDef {
    * a call that would then be refused for lack of identity.
    */
   requiresSubject?: boolean;
+  /** Registered in local stdio mode only, never on the remote HTTP server. */
+  localOnly?: boolean;
   run: (args: Record<string, unknown>, ctx: ToolContext) => Promise<{ summary: string; data: unknown }>;
 }
 
@@ -161,19 +164,24 @@ export function registerTool(server: McpServer, def: ToolDef, ctx: ToolContext):
 
 function toErrorResult(err: unknown, toolName: string) {
   if (err instanceof ToolError) {
-    const payload = { error: err.code, message: err.message, ...(err.details ?? {}) };
-    log.warn("tool error", { tool: toolName, code: err.code });
+    // Upstream bodies and causes are third-party text; log them, return the status.
+    const { bodyPreview, cause, ...details } = err.details ?? {};
+    const payload = { error: err.code, message: err.message, ...details };
+    log.warn("tool error", { tool: toolName, code: err.code, bodyPreview, cause });
     return {
       content: [{ type: "text" as const, text: `${err.message}` }],
       structuredContent: payload,
       isError: true,
     };
   }
+  // An unexpected error's text can carry paths, SQL or stack details: the client
+  // gets an id to quote, the log keeps the text under the same id.
+  const errorId = randomBytes(4).toString("hex");
   const message = err instanceof Error ? err.message : String(err);
-  log.error("tool unexpected error", { tool: toolName, message });
+  log.error("tool unexpected error", { tool: toolName, errorId, message });
   return {
-    content: [{ type: "text" as const, text: `Internal error in ${toolName}: ${message}` }],
-    structuredContent: { error: "internal_error", message },
+    content: [{ type: "text" as const, text: `Internal error in ${toolName} (id ${errorId}).` }],
+    structuredContent: { error: "internal_error", message: `Internal error (id ${errorId}).`, errorId },
     isError: true,
   };
 }

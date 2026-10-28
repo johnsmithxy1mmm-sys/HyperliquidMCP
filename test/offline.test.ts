@@ -49,7 +49,7 @@ import { resolveTarget } from "../apify-actor/target.js";
 import { createAlert } from "../src/tools/premium/alerts.js";
 import { registerTool, type ToolDef } from "../src/tools/registry.js";
 import { BillingService } from "../src/billing/service.js";
-import { ToolError } from "../src/core/errors.js";
+import { ToolError, UpstreamError } from "../src/core/errors.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import express from "express";
 import type { AddressInfo } from "node:net";
@@ -1977,4 +1977,153 @@ test("server.json matches package.json for the MCP Registry", async () => {
   assert.equal(server.packages[0].identifier, pkg.name);
   assert.equal(server.packages[0].version, pkg.version);
   assert.ok(server.description.length <= 100, "the registry rejects descriptions over 100 characters");
+});
+
+/** Registers `run` as a free tool and returns what a client receives for one call. */
+async function freeToolResult(run: ToolDef["run"]) {
+  let handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }>; structuredContent: Record<string, unknown> }> =
+    async () => ({ content: [], structuredContent: {} });
+  const server = { registerTool: (_n: string, _c: unknown, h: typeof handler) => { handler = h; } } as unknown as McpServer;
+  const def: ToolDef = { name: "hl_test_errors", tier: "free", title: "t", description: "d", inputSchema: {}, annotations: {}, run };
+  registerTool(server, def, { mode: "http" } as unknown as ToolContext);
+  return handler({});
+}
+
+test("an unexpected error reaches the client as an id, not its internal text", async () => {
+  const result = await freeToolResult(async () => {
+    throw new Error("SQLITE_CORRUPT: database disk image is malformed (/app/data/hypersignal.db)");
+  });
+
+  assert.ok(!JSON.stringify(result).includes("SQLITE"), "internal details must stay in the server log");
+  assert.match(String(result.structuredContent.errorId), /^[0-9a-f]{8}$/);
+});
+
+test("an upstream error does not forward a slice of the upstream response body", async () => {
+  const result = await freeToolResult(async () => {
+    throw new UpstreamError("Hyperliquid returned HTTP 502", { status: 502, bodyPreview: "<html>internal gateway trace</html>" });
+  });
+
+  assert.equal(result.structuredContent.bodyPreview, undefined);
+  assert.equal(result.structuredContent.status, 502);
+});
+
+test("hl_admin_stats is not exposed on the remote server, only locally", async () => {
+  const { registerTools } = await import("../src/tools/index.js");
+  const names = (mode: "http" | "stdio") => {
+    const registered: string[] = [];
+    const server = { registerTool: (name: string) => registered.push(name) } as unknown as McpServer;
+    registerTools(server, { mode } as unknown as ToolContext, ["free", "premium"]);
+    return registered;
+  };
+
+  assert.equal(names("http").includes("hl_admin_stats"), false);
+  assert.equal(names("stdio").includes("hl_admin_stats"), true);
+});
+
+test("hl_create_alert caps the active alerts one key may hold", async () => {
+  const mine = Array.from({ length: 20 }, (_, i) => ({ id: `a${i}`, subject: "key-1", type: "price_move" }));
+  const ctx = {
+    ...(tradingCtx(5) as object),
+    subject: "key-1",
+    store: {
+      alerts: {
+        listActive: () => [...mine, { id: "other", subject: "key-2", type: "price_move" }],
+        create: () => ({ id: "new", type: "price_move", params: { coin: "BTC" }, cooldownMinutes: 120 }),
+      },
+    },
+  } as unknown as ToolContext;
+
+  await assert.rejects(
+    createAlert.run({ type: "price_move", coin: "BTC", cooldownMinutes: 120 }, ctx),
+    (err: unknown) => err instanceof ToolError && err.code === "too_many_alerts",
+  );
+});
+
+test("hl_create_alert refuses a whale cohort over 100 addresses", () => {
+  const cohort = Array.from({ length: 101 }, (_, i) => `0x${String(i).padStart(40, "0")}`);
+
+  assert.equal(createAlert.inputSchema.cohort?.safeParse(cohort).success, false);
+});
+
+test("a retried Hyperliquid request is charged again for each attempt", async () => {
+  const charged: number[] = [];
+  const realAcquire = RateLimiter.prototype.acquire;
+  const realFetch = globalThis.fetch;
+  let calls = 0;
+  RateLimiter.prototype.acquire = async function (weight?: number) {
+    charged.push(weight ?? 1);
+  };
+  globalThis.fetch = (async () => {
+    calls++;
+    return calls === 1
+      ? new Response("busy", { status: 503 })
+      : new Response(JSON.stringify([{ universe: [] }, []]), { status: 200 });
+  }) as typeof fetch;
+  try {
+    const hl = new HyperliquidClient({
+      infoBaseUrl: "http://hl.test/info", requestTimeoutMs: 1000, maxRetries: 1, rateWeightPerMin: 1200,
+    } as unknown as Config);
+    await hl.metaAndAssetCtxs();
+  } finally {
+    RateLimiter.prototype.acquire = realAcquire;
+    globalThis.fetch = realFetch;
+  }
+
+  // Hyperliquid counts every HTTP request, retries included.
+  assert.deepEqual(charged, [20, 20]);
+});
+
+async function waitFor(condition: () => boolean, timeoutMs = 2000): Promise<void> {
+  const until = Date.now() + timeoutMs;
+  while (!condition() && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 20));
+}
+
+test("a WebSocket that stays connected but silent is dropped so it can reconnect", async () => {
+  const { WebSocketServer } = await import("ws");
+  const { MidsFeed } = await import("../src/core/ws.js");
+  const wss = new WebSocketServer({ port: 0 });
+  let connections = 0;
+  let closedByClient = 0;
+  wss.on("connection", (socket) => {
+    connections++;
+    socket.on("close", () => closedByClient++);
+  });
+  const { port } = wss.address() as AddressInfo;
+  const hl = { metaAndAssetCtxs: async () => [{ universe: [] }, []] } as unknown as HyperliquidClient;
+  const feed = new MidsFeed({ wsEnabled: true, wsUrl: `ws://127.0.0.1:${port}` } as unknown as Config, hl);
+  const realNow = Date.now;
+  try {
+    feed.ensureConnected();
+    await waitFor(() => connections === 1);
+    await new Promise((resolve) => setTimeout(resolve, 50)); // let the client see "open"
+    // A minute of silence: a half-open socket never fires "close" by itself.
+    Date.now = () => realNow() + 61_000;
+    await feed.getMid("BTC");
+    Date.now = realNow;
+    await waitFor(() => closedByClient === 1);
+  } finally {
+    Date.now = realNow;
+    feed.close();
+    wss.close();
+  }
+
+  assert.equal(closedByClient, 1);
+});
+
+test("a stale auto cohort is served, flagged, when there is no other source", async () => {
+  const { resolveCohort } = await import("../src/hl/cohort.js");
+  const ctx = {
+    config: { whaleAddresses: [], leaderboardUrl: undefined, requestTimeoutMs: 1000 },
+    store: {
+      cohort: {
+        get: () => ({ addresses: ["0x1111111111111111111111111111111111111111"], ageSeconds: 3 * 86_400, strategy: "top_pnl" }),
+      },
+    },
+  } as unknown as ToolContext;
+
+  // The leaderboard refresher failing for a day used to stop every whale tool and the sampler.
+  const cohort = await resolveCohort(ctx, undefined, 50);
+
+  assert.equal(cohort.source, "auto_stale");
+  assert.equal(cohort.addresses.length, 1);
 });
