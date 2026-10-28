@@ -21,6 +21,15 @@ import type {
 } from "../hl/types.js";
 
 /** Max rows userFillsByTime returns per call (Hyperliquid Info API). */
+/**
+ * Info request weights from Hyperliquid's rate-limit docs: 2 for a few light
+ * requests, 20 for every other one, plus 1 per N items the paged endpoints return.
+ */
+const WEIGHT_LIGHT = 2;
+const WEIGHT_INFO = 20;
+const ITEMS_PER_WEIGHT = 20;
+const CANDLES_PER_WEIGHT = 60;
+
 const FILLS_PAGE_LIMIT = 2000;
 /** Hard bound on paging so one wallet can never monopolize the weight budget. */
 const FILLS_MAX_PAGES = 10;
@@ -33,47 +42,51 @@ export class HyperliquidClient {
     this.limiter = new RateLimiter(config.rateWeightPerMin);
   }
 
-  private async info<T>(body: Record<string, unknown>, weight = 2): Promise<T> {
+  private async info<T>(body: Record<string, unknown>, weight = WEIGHT_INFO, itemsPerWeight?: number): Promise<T> {
     await this.limiter.acquire(weight);
-    return postJson<T>(this.config.infoBaseUrl, body, {
+    const res = await postJson<T>(this.config.infoBaseUrl, body, {
       timeoutMs: this.config.requestTimeoutMs,
       maxRetries: this.config.maxRetries,
     });
+    // The per-item surcharge is only known once the response is in.
+    const extra = itemsPerWeight && Array.isArray(res) ? Math.floor(res.length / itemsPerWeight) : 0;
+    if (extra > 0) await this.limiter.acquire(extra);
+    return res;
   }
 
   // ---- Metadata / markets ----------------------------------------------------
 
   metaAndAssetCtxs(): Promise<MetaAndAssetCtxs> {
     return this.cache.getOrLoad("metaAndAssetCtxs", TTL.markets, () =>
-      this.info<MetaAndAssetCtxs>({ type: "metaAndAssetCtxs" }, 2),
+      this.info<MetaAndAssetCtxs>({ type: "metaAndAssetCtxs" }),
     );
   }
 
   perpMeta(): Promise<PerpMeta> {
-    return this.cache.getOrLoad("meta", TTL.metadata, () => this.info<PerpMeta>({ type: "meta" }, 2));
+    return this.cache.getOrLoad("meta", TTL.metadata, () => this.info<PerpMeta>({ type: "meta" }));
   }
 
   spotMetaAndAssetCtxs(): Promise<unknown> {
     return this.cache.getOrLoad("spotMetaAndAssetCtxs", TTL.markets, () =>
-      this.info<unknown>({ type: "spotMetaAndAssetCtxs" }, 2),
+      this.info<unknown>({ type: "spotMetaAndAssetCtxs" }),
     );
   }
 
   /** Builder-deployed perp dex list (HIP-3). First entry is null (default dex). */
   perpDexs(): Promise<PerpDexEntry[]> {
-    return this.cache.getOrLoad("perpDexs", TTL.metadata, () => this.info<PerpDexEntry[]>({ type: "perpDexs" }, 2));
+    return this.cache.getOrLoad("perpDexs", TTL.metadata, () => this.info<PerpDexEntry[]>({ type: "perpDexs" }));
   }
 
   /** metaAndAssetCtxs scoped to a builder dex. Callers must try/catch — coverage varies. */
   metaAndAssetCtxsForDex(dex: string): Promise<MetaAndAssetCtxs> {
     return this.cache.getOrLoad(`metaAndAssetCtxs:${dex}`, TTL.markets, () =>
-      this.info<MetaAndAssetCtxs>({ type: "metaAndAssetCtxs", dex }, 2),
+      this.info<MetaAndAssetCtxs>({ type: "metaAndAssetCtxs", dex }),
     );
   }
 
   predictedFundings(): Promise<PredictedFundings> {
     return this.cache.getOrLoad("predictedFundings", TTL.markets, () =>
-      this.info<PredictedFundings>({ type: "predictedFundings" }, 2),
+      this.info<PredictedFundings>({ type: "predictedFundings" }),
     );
   }
 
@@ -81,14 +94,14 @@ export class HyperliquidClient {
 
   l2Book(coin: string): Promise<L2Book> {
     return this.cache.getOrLoad(`l2:${coin}`, TTL.orderbook, () =>
-      this.info<L2Book>({ type: "l2Book", coin }, 2),
+      this.info<L2Book>({ type: "l2Book", coin }, WEIGHT_LIGHT),
     );
   }
 
   candles(coin: string, interval: string, startTime: number, endTime: number): Promise<Candle[]> {
     const key = `candles:${coin}:${interval}:${startTime}:${endTime}`;
     return this.cache.getOrLoad(key, TTL.candles, () =>
-      this.info<Candle[]>({ type: "candleSnapshot", req: { coin, interval, startTime, endTime } }, 4),
+      this.info<Candle[]>({ type: "candleSnapshot", req: { coin, interval, startTime, endTime } }, WEIGHT_INFO, CANDLES_PER_WEIGHT),
     );
   }
 
@@ -96,26 +109,26 @@ export class HyperliquidClient {
     const key = `funding:${coin}:${startTime}:${endTime ?? "now"}`;
     const body: Record<string, unknown> = { type: "fundingHistory", coin, startTime };
     if (endTime !== undefined) body.endTime = endTime;
-    return this.cache.getOrLoad(key, TTL.candles, () => this.info<FundingHistoryEntry[]>(body, 2));
+    return this.cache.getOrLoad(key, TTL.candles, () => this.info<FundingHistoryEntry[]>(body, WEIGHT_INFO, ITEMS_PER_WEIGHT));
   }
 
   // ---- Account state ---------------------------------------------------------
 
   clearinghouseState(user: string): Promise<ClearinghouseState> {
     return this.cache.getOrLoad(`chs:${user.toLowerCase()}`, TTL.account, () =>
-      this.info<ClearinghouseState>({ type: "clearinghouseState", user }, 2),
+      this.info<ClearinghouseState>({ type: "clearinghouseState", user }, WEIGHT_LIGHT),
     );
   }
 
   openOrders(user: string): Promise<OpenOrder[]> {
     return this.cache.getOrLoad(`oo:${user.toLowerCase()}`, TTL.account, () =>
-      this.info<OpenOrder[]>({ type: "frontendOpenOrders", user }, 2),
+      this.info<OpenOrder[]>({ type: "frontendOpenOrders", user }),
     );
   }
 
   userFills(user: string): Promise<UserFill[]> {
     return this.cache.getOrLoad(`fills:${user.toLowerCase()}`, TTL.account, () =>
-      this.info<UserFill[]>({ type: "userFills", user }, 2),
+      this.info<UserFill[]>({ type: "userFills", user }, WEIGHT_INFO, ITEMS_PER_WEIGHT),
     );
   }
 
@@ -140,7 +153,7 @@ export class HyperliquidClient {
     for (let page = 0; page < FILLS_MAX_PAGES; page++) {
       const body: Record<string, unknown> = { type: "userFillsByTime", user, startTime: cursor, aggregateByTime: false };
       if (endTime !== undefined) body.endTime = endTime;
-      const batch = await this.info<UserFill[]>(body, 4);
+      const batch = await this.info<UserFill[]>(body, WEIGHT_INFO, ITEMS_PER_WEIGHT);
       if (!Array.isArray(batch) || batch.length === 0) break;
 
       // Pages overlap on `time`, so dedupe by the fill's unique id.
@@ -162,7 +175,7 @@ export class HyperliquidClient {
   }
 
   /** Raw escape hatch for aggregation tools that need an uncached, custom Info request. */
-  rawInfo<T>(body: Record<string, unknown>, weight = 2): Promise<T> {
+  rawInfo<T>(body: Record<string, unknown>, weight = WEIGHT_INFO): Promise<T> {
     return this.info<T>(body, weight);
   }
 }

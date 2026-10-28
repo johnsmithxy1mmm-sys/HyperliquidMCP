@@ -17,7 +17,8 @@ import { sharpe, sortino, maxDrawdown, annualizeHourlyFunding, paginate, round, 
 import { assertExchangeOk, TradingService } from "../src/trading/exchange.js";
 import { getDb, upsertKey, getKey, disableMissingBootstrapKeys } from "../src/billing/db.js";
 import type { Config } from "../src/config.js";
-import type { HyperliquidClient } from "../src/core/hlClient.js";
+import { HyperliquidClient } from "../src/core/hlClient.js";
+import { RateLimiter } from "../src/core/rateLimiter.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { planTwap, planIceberg, planMirror } from "../src/execution/plan.js";
@@ -1380,4 +1381,31 @@ test("a deploy with both key env vars empty does not revoke every bootstrap key"
   }
 
   assert.equal(getKey(db, keyHash)?.disabled, 0, "a missing secret must not lock out every paying customer");
+});
+
+test("hyperliquid client charges the documented info request weights", async () => {
+  const charged: number[] = [];
+  const realAcquire = RateLimiter.prototype.acquire;
+  const realFetch = globalThis.fetch;
+  RateLimiter.prototype.acquire = async function (weight?: number) {
+    charged.push(weight ?? 1);
+  };
+  globalThis.fetch = (async (_url: unknown, init?: { body?: unknown }) => {
+    const body = JSON.parse(String(init?.body));
+    const fills = Array.from({ length: 45 }, (_, i) => ({ tid: i, hash: "h", time: 1, coin: "BTC", px: "1", sz: "1" }));
+    return new Response(JSON.stringify(body.type === "userFillsByTime" ? fills : [{ universe: [] }, []]), { status: 200 });
+  }) as typeof fetch;
+  try {
+    const hl = new HyperliquidClient({
+      infoBaseUrl: "http://hl.test/info", requestTimeoutMs: 1000, maxRetries: 0, rateWeightPerMin: 1200,
+    } as unknown as Config);
+    await hl.metaAndAssetCtxs();
+    await hl.userFillsByTime("0xabc", 0, 1);
+  } finally {
+    RateLimiter.prototype.acquire = realAcquire;
+    globalThis.fetch = realFetch;
+  }
+
+  // Hyperliquid docs: most info requests weigh 20; fill endpoints add 1 per 20 items returned.
+  assert.deepEqual(charged, [20, 20, 2]);
 });
