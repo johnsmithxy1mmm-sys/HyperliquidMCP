@@ -83,13 +83,13 @@ Node **20 or 22 LTS** (Node 24 has no prebuilt `better-sqlite3` binaries and req
 
 ### Local (stdio) — free + trading, for Claude Desktop / Claude Code / Cursor
 
-Claude Desktop (`claude_desktop_config.json`):
+Claude Desktop (`claude_desktop_config.json`), from npm:
 ```json
 {
   "mcpServers": {
     "hypersignal": {
-      "command": "node",
-      "args": ["/absolute/path/to/hypersignal-mcp/dist/server-stdio.js"],
+      "command": "npx",
+      "args": ["-y", "hypersignal-mcp"],
       "env": {
         "HL_NETWORK": "mainnet",
         "HL_BUILDER_ADDRESS": "0xYourBuilderAddress",
@@ -100,6 +100,7 @@ Claude Desktop (`claude_desktop_config.json`):
 }
 ```
 
+From a clone instead: `"command": "node"`, `"args": ["/absolute/path/to/HyperliquidMCP/dist/server-stdio.js"]`.
 Cursor (`.cursor/mcp.json`) uses the same `command`/`args`/`env` shape.
 
 Inspect locally:

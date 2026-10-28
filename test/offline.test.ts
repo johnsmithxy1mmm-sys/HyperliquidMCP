@@ -1965,3 +1965,16 @@ test("hl_copy_wallet sizes from the master account's equity, not the empty agent
 
   assert.equal((data as { myEquityUsd: number }).myEquityUsd, 1_000_000);
 });
+
+test("server.json matches package.json for the MCP Registry", async () => {
+  const { readFileSync } = await import("node:fs");
+  const pkg = JSON.parse(readFileSync("package.json", "utf8"));
+  const server = JSON.parse(readFileSync("server.json", "utf8"));
+
+  // The registry checks the npm package's mcpName against server.json's name.
+  assert.equal(server.name, pkg.mcpName);
+  assert.equal(server.version, pkg.version);
+  assert.equal(server.packages[0].identifier, pkg.name);
+  assert.equal(server.packages[0].version, pkg.version);
+  assert.ok(server.description.length <= 100, "the registry rejects descriptions over 100 characters");
+});
