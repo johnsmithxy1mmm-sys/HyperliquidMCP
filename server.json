@@ -1,0 +1,58 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.johnsmithxy1mmm-sys/hypersignal-mcp",
+  "title": "HyperSignal MCP",
+  "description": "Hyperliquid analytics for AI agents: whale flow, liquidations, funding, risk, signed signals.",
+  "repository": {
+    "url": "https://github.com/johnsmithxy1mmm-sys/HyperliquidMCP",
+    "source": "github"
+  },
+  "version": "1.6.8",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "hypersignal-mcp",
+      "version": "1.6.8",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "HL_NETWORK",
+          "description": "mainnet or testnet",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "HL_ENABLE_TRADING",
+          "description": "true to allow the local trading tools to submit orders (dry-run otherwise)",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false
+        },
+        {
+          "name": "HL_AGENT_PRIVATE_KEY",
+          "description": "Agent (API) wallet key for trading; only read locally",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true
+        }
+      ]
+    }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://hypersmash.fly.dev/mcp",
+      "headers": [
+        {
+          "name": "X-API-Key",
+          "description": "Key for premium tools; free tools work without it (get one with hl_request_free_key)",
+          "isRequired": false,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}

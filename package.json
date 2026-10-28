@@ -2,8 +2,22 @@
   "name": "hypersignal-mcp",
   "version": "1.6.8",
   "description": "Monetized MCP server for Hyperliquid analytics and signals (free market data + premium whale/liquidation/funding/risk signals + optional builder-code trading).",
+  "mcpName": "io.github.johnsmithxy1mmm-sys/hypersignal-mcp",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/johnsmithxy1mmm-sys/HyperliquidMCP.git"
+  },
+  "homepage": "https://github.com/johnsmithxy1mmm-sys/HyperliquidMCP#readme",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "hyperliquid",
+    "trading",
+    "analytics",
+    "x402"
+  ],
   "engines": {
     "node": ">=20 <23"
   },
@@ -23,7 +37,8 @@
     "dev:http": "tsx src/server-http.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --import tsx --test test/*.test.ts",
-    "inspect": "npx @modelcontextprotocol/inspector node dist/server-stdio.js"
+    "inspect": "npx @modelcontextprotocol/inspector node dist/server-stdio.js",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
