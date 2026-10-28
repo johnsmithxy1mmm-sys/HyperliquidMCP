@@ -6,6 +6,12 @@
  */
 import type { AlertRecord, EvalResult } from "./types.js";
 
+/**
+ * Smallest price_move threshold. price_move has no crossing edge, so a near-zero
+ * threshold fires on every cooldown and floods the public track record.
+ */
+export const MIN_MOVE_PCT = 0.01;
+
 export interface EvalInputs {
   now: number;
   /** Current market data for the alert's coin. */
@@ -52,19 +58,26 @@ function evalFundingApr(alert: AlertRecord, inp: EvalInputs): EvalResult {
 }
 
 function evalPriceMove(alert: AlertRecord, inp: EvalInputs): EvalResult {
-  const movePct = alert.params.movePct ?? 0.05;
+  // Clamped too: alerts stored before the floor existed may hold 0.
+  const movePct = Math.max(alert.params.movePct ?? 0.05, MIN_MOVE_PCT);
   const coin = alert.params.coin ?? "?";
   if (inp.markPx === undefined || inp.priorPx === undefined || inp.priorPx <= 0) return { fired: false };
   const ret = (inp.markPx - inp.priorPx) / inp.priorPx;
-  if (Math.abs(ret) >= movePct) {
+  const over = Math.abs(ret) >= movePct;
+  const prevOver = (alert.lastState as { over?: boolean } | null)?.over === true;
+  const state = { over };
+  // Rising edge only: a move that persists for the whole window would
+  // otherwise re-fire on every cooldown and flood the track record.
+  if (over && !prevOver) {
     const direction: "long" | "short" = ret > 0 ? "long" : "short";
     return {
       fired: true,
       message: `${coin} moved ${(ret * 100).toFixed(2)}% over the window (≥ ${(movePct * 100).toFixed(1)}%).`,
+      state,
       signal: { type: "price_move", coin, direction, refPx: inp.markPx },
     };
   }
-  return { fired: false };
+  return { fired: false, state };
 }
 
 function evalWhaleFlip(alert: AlertRecord, inp: EvalInputs): EvalResult {

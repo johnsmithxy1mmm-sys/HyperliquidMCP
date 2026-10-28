@@ -36,7 +36,7 @@
     "mcpServerUrl": {
       "title": "MCP server URL",
       "type": "string",
-      "description": "Your deployed HyperSignal MCP endpoint (leave default unless self-hosting elsewhere).",
+      "description": "Your deployed HyperSignal MCP endpoint (leave default unless self-hosting elsewhere). Used only together with your own MCP API key; without one, runs go to the operator's server.",
       "editor": "textfield",
       "default": "https://hypersmash.fly.dev/mcp"
     },

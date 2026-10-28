@@ -42,6 +42,14 @@ import { aggregateByCoin, type CohortAccount } from "../src/hl/whales.js";
 import { clampFee } from "../src/config.js";
 import { TtlLruCache } from "../src/core/cache.js";
 import { InMemorySnapshotStore } from "../src/core/snapshots.js";
+import { AlertEngine } from "../src/alerts/engine.js";
+import type { Warehouse } from "../src/store/warehouse.js";
+import { resolveTarget } from "../apify-actor/target.js";
+import { createAlert } from "../src/tools/premium/alerts.js";
+import { registerTool, type ToolDef } from "../src/tools/registry.js";
+import { BillingService } from "../src/billing/service.js";
+import { ToolError } from "../src/core/errors.js";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 test("formatSize rounds to szDecimals", () => {
   assert.equal(formatSize(1.23456789, 3), "1.235");
@@ -1070,4 +1078,115 @@ test("duplicate contract listings collapse to the most liquid copy", async () =>
   // Distinct thresholds are never merged.
   const distinct = dedupeLadderEntries([row("a", 0.5, 1), { ...row("b", 0.4, 1), thresholdUsd: 55000 }]);
   assert.equal(distinct.dropped, 0);
+});
+
+test("alert engine resolves due score outcomes with no alerts and no due signals", async () => {
+  const db = new BetterSqlite3(":memory:");
+  const scores = new ScoreStore(db);
+  const day = 86_400_000;
+  scores.record({ address: "0xabc", score: 50, accountValue: 1, horizonDays: 1, ts: 1000 });
+  // A server nobody has created an alert on: calibration must still accrue.
+  const store = {
+    alerts: { listActive: () => [] },
+    signals: { dueForScoring: () => [] },
+    scores,
+  } as unknown as Warehouse;
+  const hl = {
+    userFillsByTime: async () => [{ closedPnl: "125.5" }, { closedPnl: "-25.5" }],
+  } as unknown as HyperliquidClient;
+  const engine = new AlertEngine(hl, store, {} as SignalSigner, {} as ToolContext);
+
+  await engine.tick(5 * day);
+
+  assert.equal(scores.counts().resolved, 1);
+});
+
+test("apify actor never sends the operator key to a caller-supplied URL", () => {
+  const env = { MCP_SERVER_URL: "https://operator.example/mcp", MCP_API_KEY: "hs_pro_operator" };
+
+  const target = resolveTarget({ mcpServerUrl: "https://evil.example/mcp" }, env);
+
+  assert.deepEqual(target, { url: "https://operator.example/mcp", apiKey: "hs_pro_operator" });
+});
+
+test("apify actor lets a caller with their own key pick their own server", () => {
+  const env = { MCP_SERVER_URL: "https://operator.example/mcp", MCP_API_KEY: "hs_pro_operator" };
+
+  const target = resolveTarget({ mcpServerUrl: "https://self-hosted.example/mcp", mcpApiKey: "hs_pro_caller" }, env);
+
+  assert.deepEqual(target, { url: "https://self-hosted.example/mcp", apiKey: "hs_pro_caller" });
+});
+
+test("price_move alert stored with movePct 0 does not fire on a sub-1% move", () => {
+  // Alerts created before the floor existed can still hold 0 in the database.
+  const alert: AlertRecord = {
+    id: "a", subject: "s", type: "price_move", params: { coin: "BTC", movePct: 0 },
+    enabled: true, cooldownMinutes: 5, lastFiredAt: null, lastState: null, createdAt: 0,
+  };
+
+  const result = evaluateAlert(alert, { now: 1, markPx: 100.5, priorPx: 100 });
+
+  assert.equal(result.fired, false);
+});
+
+test("hl_create_alert rejects a price_move threshold below 1%", () => {
+  const movePct = createAlert.inputSchema.movePct;
+
+  assert.equal(movePct?.safeParse(0).success, false);
+  assert.equal(movePct?.safeParse(0.009).success, false);
+  assert.equal(movePct?.safeParse(0.01).success, true);
+});
+
+/** Registers `run` as a premium tool behind a fresh free key; returns the call and the key's usage. */
+function premiumCallOnFreeKey(name: string, run: ToolDef["run"]) {
+  const billing = new BillingService({
+    dbPath: join(tmpdir(), `hypersignal-test-${Date.now()}.db`),
+    x402: { enabled: false },
+  } as unknown as Config);
+  const fingerprint = `${name}-${Date.now()}-${Math.random()}`;
+  const { rawKey } = billing.issueFreeKey(fingerprint);
+  let handler: (args: Record<string, unknown>) => Promise<{ isError?: boolean }> = async () => ({});
+  const server = {
+    registerTool: (_name: string, _config: unknown, h: typeof handler) => {
+      handler = h;
+    },
+  } as unknown as McpServer;
+  const def: ToolDef = { name, tier: "premium", title: name, description: name, inputSchema: {}, annotations: {}, run };
+  registerTool(server, def, { mode: "http", authorize: billing.authorizerFor({ apiKey: rawKey }) } as unknown as ToolContext);
+  return { call: () => handler({}), usage: () => billing.freeKeyUsage(fingerprint) };
+}
+
+test("a premium call that fails does not use up the free key's monthly quota", async () => {
+  const tool = premiumCallOnFreeKey("hl_test_failing", async () => {
+    throw new ToolError("unknown_coin", "No such coin.");
+  });
+
+  const result = await tool.call();
+
+  assert.equal(result.isError, true);
+  assert.equal(tool.usage(), 0);
+});
+
+test("a premium call that succeeds counts against the free key's monthly quota", async () => {
+  const tool = premiumCallOnFreeKey("hl_test_ok", async () => ({ summary: "ok", data: {} }));
+
+  const result = await tool.call();
+
+  assert.notEqual(result.isError, true);
+  assert.equal(tool.usage(), 1);
+});
+
+test("price_move fires once per crossing and re-arms after the move fades", () => {
+  const base: AlertRecord = {
+    id: "a", subject: "s", type: "price_move", params: { coin: "SOL", movePct: 0.01, windowMinutes: 1440 },
+    enabled: true, cooldownMinutes: 5, lastFiredAt: null, lastState: null, createdAt: 0,
+  };
+
+  const cross = evaluateAlert(base, { now: 1, markPx: 102, priorPx: 100 });
+  // A 24h move that persists all day must not re-fire on every cooldown.
+  const persists = evaluateAlert({ ...base, lastState: cross.state }, { now: 2, markPx: 103, priorPx: 100 });
+  const fades = evaluateAlert({ ...base, lastState: persists.state }, { now: 3, markPx: 100.5, priorPx: 100 });
+  const recross = evaluateAlert({ ...base, lastState: fades.state }, { now: 4, markPx: 98, priorPx: 100 });
+
+  assert.deepEqual([cross.fired, persists.fired, fades.fired, recross.fired], [true, false, false, true]);
 });

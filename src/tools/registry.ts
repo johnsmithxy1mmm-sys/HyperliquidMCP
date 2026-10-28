@@ -50,8 +50,11 @@ export interface ToolContext {
   clientIp?: string;
   /** Billing service, http mode only (self-serve key issuance). */
   billing?: BillingLike;
-  /** Premium billing gate. Free/trading tools ignore it; premium tools await it first. */
-  authorize: (toolName: string) => Promise<void>;
+  /**
+   * Premium billing gate. Free/trading tools ignore it; premium tools await it
+   * first. May return a refund that undoes the charge if the tool then fails.
+   */
+  authorize: (toolName: string) => Promise<(() => void) | undefined>;
   /** Present only in stdio mode when trading is enabled. */
   trading?: TradingService;
   /** Background execution runner (stdio trading only). */
@@ -115,6 +118,7 @@ export function registerTool(server: McpServer, def: ToolDef, ctx: ToolContext):
     },
     // The SDK validates args against inputSchema before calling us.
     async (args: Record<string, unknown>) => {
+      let refund: (() => void) | undefined;
       try {
         if (def.requiresSubject && (!ctx.subject || ctx.subject === "anon")) {
           throw new ToolError(
@@ -123,13 +127,15 @@ export function registerTool(server: McpServer, def: ToolDef, ctx: ToolContext):
               `Pay-per-call x402 has no stable identity, so it cannot own alerts.`,
           );
         }
-        if (def.tier === "premium") await ctx.authorize(def.name);
+        if (def.tier === "premium") refund = await ctx.authorize(def.name);
         const { summary, data } = await def.run(args ?? {}, ctx);
         return {
           content: [{ type: "text" as const, text: summary }],
           structuredContent: data as Record<string, unknown>,
         };
       } catch (err) {
+        // A call that delivered nothing must not use up the caller's quota.
+        refund?.();
         return toErrorResult(err, def.name);
       }
     },

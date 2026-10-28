@@ -6,6 +6,7 @@
 //   MCP_SERVER_URL  e.g. https://hypersmash.fly.dev/mcp
 //   MCP_API_KEY     a PRO key on your server (kept server-side; users never see it)
 import { Actor } from "apify";
+import { resolveTarget } from "./target.js";
 
 const EXPORTED = [
   "hl_whale_flow_alerts",
@@ -27,10 +28,9 @@ try {
     throw new Error(`input.tool must be one of: ${EXPORTED.join(", ")}. Got: ${JSON.stringify(tool)}`);
   }
 
-  // Config resolves from Input first, then env vars. Input works without any
-  // console settings; env vars keep the key hidden from public runs.
-  const url = input.mcpServerUrl || process.env.MCP_SERVER_URL || "https://hypersmash.fly.dev/mcp";
-  const apiKey = input.mcpApiKey || process.env.MCP_API_KEY;
+  // A caller's own key may go to the caller's own URL; otherwise the env key
+  // (hidden from public runs) only ever goes to the env URL.
+  const { url, apiKey } = resolveTarget(input, process.env);
   if (!apiKey) {
     throw new Error(
       "API key required. Provide `mcpApiKey` in the input (secret field), or set MCP_API_KEY in the Actor's env vars.",

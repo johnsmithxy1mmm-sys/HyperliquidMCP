@@ -65,7 +65,12 @@ export class AlertEngine {
       // deleted — otherwise the track record freezes. Only skip the network
       // round-trip when there is truly nothing to do.
       const due = this.store.signals.dueForScoring(now);
-      if (alerts.length === 0 && due.length === 0) return 0;
+      if (alerts.length === 0 && due.length === 0) {
+        // Calibration outcomes need neither alerts nor market rows; skipping
+        // them here froze every observation on a server with no alerts.
+        await this.resolveDueScoreOutcomes(now);
+        return 0;
+      }
 
       const rows = await getMarketRows(this.hl);
       const marketByCoin = new Map(rows.map((r) => [r.coin, r]));

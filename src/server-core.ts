@@ -15,7 +15,7 @@ import type { TradingService } from "./trading/exchange.js";
 import type { ExecutionRunner } from "./execution/runner.js";
 
 export const SERVER_NAME = "hypersignal-mcp";
-export const SERVER_VERSION = "1.6.0";
+export const SERVER_VERSION = "1.6.1";
 
 /** Long-lived singletons shared across requests. */
 export class Core {
@@ -39,7 +39,7 @@ export interface BuildServerOptions {
   mode: "stdio" | "http";
   /** Owner identity for per-subject resources (alerts). stdio => "local". */
   subject?: string;
-  authorize?: (toolName: string) => Promise<void>;
+  authorize?: ToolContext["authorize"];
   trading?: TradingService;
   execution?: ExecutionRunner;
   /** Client IP (http only) — bounds self-serve free-key issuance. */
@@ -48,9 +48,7 @@ export interface BuildServerOptions {
   billing?: BillingLike;
 }
 
-const NO_AUTH = async (): Promise<void> => {
-  /* unmetered (stdio / local) */
-};
+const NO_AUTH: ToolContext["authorize"] = async () => undefined; // unmetered (stdio / local)
 
 export function buildServer(core: Core, opts: BuildServerOptions): McpServer {
   const server = new McpServer(

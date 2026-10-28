@@ -14,6 +14,7 @@ import {
   getDb,
   getKey,
   incrementUsage,
+  decrementUsage,
   monthlyTotal,
   upsertKey,
   disableMissingBootstrapKeys,
@@ -120,24 +121,31 @@ export class BillingService {
     return row && !row.disabled ? row.keyHash : "anon";
   }
 
-  /** Build a per-request authorize() closure. */
-  authorizerFor(auth: RequestAuth): (toolName: string) => Promise<void> {
+  /**
+   * Build a per-request authorize() closure. A key-metered call returns a
+   * refund that undoes its charge if the tool then fails; an x402 payment is
+   * already settled on-chain, so it returns none.
+   */
+  authorizerFor(auth: RequestAuth): (toolName: string) => Promise<(() => void) | undefined> {
     return async (toolName: string) => {
       const keyRow = auth.apiKey ? getKey(this.db, this.hash(auth.apiKey)) : undefined;
       const tier = tierFor(keyRow && !keyRow.disabled ? keyRow.tier : "anonymous");
+      const period = this.period();
+      const charge = (keyHash: string) => {
+        incrementUsage(this.db, keyHash, period, toolName);
+        return () => decrementUsage(this.db, keyHash, period, toolName);
+      };
 
       // Pro: unlimited (still counted for analytics).
       if (tier.monthlyPremiumCalls === null && keyRow) {
-        incrementUsage(this.db, keyRow.keyHash, this.period(), toolName);
-        return;
+        return charge(keyRow.keyHash);
       }
 
       // Free key with remaining quota.
       if (keyRow && tier.monthlyPremiumCalls !== null && tier.monthlyPremiumCalls > 0) {
-        const used = monthlyTotal(this.db, keyRow.keyHash, this.period());
+        const used = monthlyTotal(this.db, keyRow.keyHash, period);
         if (used < tier.monthlyPremiumCalls) {
-          incrementUsage(this.db, keyRow.keyHash, this.period(), toolName);
-          return;
+          return charge(keyRow.keyHash);
         }
       }
 
@@ -147,7 +155,7 @@ export class BillingService {
         const result = await verifyPayment(this.config, this.db, auth.xPayment, requirements);
         if (result.ok) {
           log.info("x402 payment accepted", { toolName, paymentId: result.paymentId });
-          return;
+          return undefined;
         }
         throw new PaymentRequiredError(
           `Payment required for premium tool "${toolName}". ` +
