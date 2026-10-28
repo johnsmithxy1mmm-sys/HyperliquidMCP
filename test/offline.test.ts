@@ -46,6 +46,7 @@ import { AlertEngine } from "../src/alerts/engine.js";
 import type { Warehouse } from "../src/store/warehouse.js";
 import type { SignalSigner } from "../src/signals/signer.js";
 import { resolveTarget } from "../apify-actor/target.js";
+import { createAlert } from "../src/tools/premium/alerts.js";
 
 test("formatSize rounds to szDecimals", () => {
   assert.equal(formatSize(1.23456789, 3), "1.235");
@@ -1111,4 +1112,24 @@ test("apify actor lets a caller with their own key pick their own server", () =>
   const target = resolveTarget({ mcpServerUrl: "https://self-hosted.example/mcp", mcpApiKey: "hs_pro_caller" }, env);
 
   assert.deepEqual(target, { url: "https://self-hosted.example/mcp", apiKey: "hs_pro_caller" });
+});
+
+test("price_move alert stored with movePct 0 does not fire on a sub-1% move", () => {
+  // Alerts created before the floor existed can still hold 0 in the database.
+  const alert: AlertRecord = {
+    id: "a", subject: "s", type: "price_move", params: { coin: "BTC", movePct: 0 },
+    enabled: true, cooldownMinutes: 5, lastFiredAt: null, lastState: null, createdAt: 0,
+  };
+
+  const result = evaluateAlert(alert, { now: 1, markPx: 100.5, priorPx: 100 });
+
+  assert.equal(result.fired, false);
+});
+
+test("hl_create_alert rejects a price_move threshold below 1%", () => {
+  const movePct = createAlert.inputSchema.movePct;
+
+  assert.equal(movePct?.safeParse(0).success, false);
+  assert.equal(movePct?.safeParse(0.009).success, false);
+  assert.equal(movePct?.safeParse(0.01).success, true);
 });

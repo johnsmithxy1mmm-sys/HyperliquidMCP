@@ -5,6 +5,7 @@ import { ANALYTICS_DISCLAIMER } from "../../hl/whales.js";
 import { resolveMarket } from "../../hl/markets.js";
 import { isAddress } from "../../core/format.js";
 import type { AlertType, AlertParams } from "../../alerts/types.js";
+import { MIN_MOVE_PCT } from "../../alerts/evaluate.js";
 
 const ALERT_TYPES = ["funding_apr", "price_move", "whale_net_flip"] as const;
 
@@ -32,7 +33,7 @@ export const createAlert: ToolDef = {
     type: z.enum(ALERT_TYPES),
     coin: z.string().describe("Perp coin symbol the alert watches."),
     aprThreshold: z.number().min(0).optional().describe("funding_apr: |APR| fraction (0.5 = 50%)."),
-    movePct: z.number().min(0).optional().describe("price_move: |return| fraction (0.05 = 5%)."),
+    movePct: z.number().min(MIN_MOVE_PCT).optional().describe("price_move: |return| fraction (0.05 = 5%, min 0.01)."),
     windowMinutes: z.number().int().min(5).max(1440).optional().describe("price_move lookback window."),
     cohort: z.array(z.string()).optional().describe("whale_net_flip: 0x addresses (else HL_WHALE_ADDRESSES)."),
     cooldownMinutes: z.number().int().min(5).max(10080).default(120).describe("Min gap between re-fires."),

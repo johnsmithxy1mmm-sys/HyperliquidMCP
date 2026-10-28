@@ -6,6 +6,12 @@
  */
 import type { AlertRecord, EvalResult } from "./types.js";
 
+/**
+ * Smallest price_move threshold. price_move has no crossing edge, so a near-zero
+ * threshold fires on every cooldown and floods the public track record.
+ */
+export const MIN_MOVE_PCT = 0.01;
+
 export interface EvalInputs {
   now: number;
   /** Current market data for the alert's coin. */
@@ -52,7 +58,8 @@ function evalFundingApr(alert: AlertRecord, inp: EvalInputs): EvalResult {
 }
 
 function evalPriceMove(alert: AlertRecord, inp: EvalInputs): EvalResult {
-  const movePct = alert.params.movePct ?? 0.05;
+  // Clamped too: alerts stored before the floor existed may hold 0.
+  const movePct = Math.max(alert.params.movePct ?? 0.05, MIN_MOVE_PCT);
   const coin = alert.params.coin ?? "?";
   if (inp.markPx === undefined || inp.priorPx === undefined || inp.priorPx <= 0) return { fired: false };
   const ret = (inp.markPx - inp.priorPx) / inp.priorPx;
