@@ -4,7 +4,7 @@
  * hl_whale_flow_alerts, and hl_liquidation_map.
  */
 import type { ToolContext } from "../tools/registry.js";
-import { normalizeAccount, accountStateFor, assertKnownDex, type NormalizedAccount, type NormalizedPosition } from "./account.js";
+import { normalizeAccount, accountStateFor, resolveDex, type NormalizedAccount, type NormalizedPosition } from "./account.js";
 import { round } from "../core/format.js";
 import { log } from "../logger.js";
 
@@ -35,8 +35,8 @@ export async function fetchCohortAccounts(
   dex?: string,
   concurrency = 5,
 ): Promise<CohortAccount[]> {
-  // Checked once up front: per wallet the error would be skipped as a failed load.
-  if (dex && dex !== "all") await assertKnownDex(ctx.hl, dex);
+  // Resolved once up front: per wallet an unknown dex would be skipped as a failed load.
+  const exactDex = dex && dex !== "all" ? await resolveDex(ctx.hl, dex) : dex;
   const out: CohortAccount[] = [];
   let i = 0;
   async function worker(): Promise<void> {
@@ -44,7 +44,7 @@ export async function fetchCohortAccounts(
       const idx = i++;
       const address = addresses[idx];
       try {
-        const state = await accountStateFor(ctx.hl, address, dex);
+        const state = await accountStateFor(ctx.hl, address, exactDex);
         out.push({ address, account: normalizeAccount(state) });
       } catch (err) {
         log.warn("cohort wallet fetch failed", { address, err: String(err) });

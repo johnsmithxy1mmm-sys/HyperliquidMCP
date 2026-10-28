@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { ToolDef } from "../registry.js";
 import { getMarketRows } from "../../hl/markets.js";
-import { dexArg } from "../../hl/account.js";
+import { resolveDexArg } from "../../hl/account.js";
 import { paginate, round } from "../../core/format.js";
 
 const SORTS = ["volume", "openInterest", "funding", "change24h", "name"] as const;
@@ -36,7 +36,7 @@ export const getMarkets: ToolDef = {
     const offset = (args.offset as number) ?? 0;
     const limit = (args.limit as number) ?? 50;
 
-    let rows = await getMarketRows(ctx.hl, dexArg(args.dex));
+    let rows = await getMarketRows(ctx.hl, await resolveDexArg(ctx.hl, args.dex));
     if (!includeDelisted) rows = rows.filter((r) => !r.isDelisted);
     if (filter) rows = rows.filter((r) => r.coin.toLowerCase().includes(filter));
 

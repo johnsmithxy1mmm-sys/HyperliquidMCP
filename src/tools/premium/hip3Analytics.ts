@@ -4,6 +4,7 @@ import type { ToolContext } from "../registry.js";
 import { getMarketRows, buildRow, type MarketRow } from "../../hl/markets.js";
 import { round, paginate } from "../../core/format.js";
 import { ANALYTICS_DISCLAIMER } from "../../hl/whales.js";
+import { resolveDexArg } from "../../hl/account.js";
 import { log } from "../../logger.js";
 
 /**
@@ -45,7 +46,9 @@ export const hip3Analytics: ToolDef = {
   },
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   run: async (args, ctx) => {
-    const dexFilter = (args.dex as string | undefined)?.toLowerCase();
+    // The exact live name: testnet has dexes that differ only in case ("VOLMEX", "volmex").
+    const dex = await resolveDexArg(ctx.hl, args.dex);
+    const dexFilter = dex === "all" ? undefined : dex;
     const spotRefs = (args.spotRefs as Record<string, number> | undefined) ?? {};
 
     const { rows, dexsScanned, dexsFailed, dexsNotScanned } = await collectHip3Rows(ctx, dexFilter);
@@ -114,7 +117,7 @@ async function collectHip3Rows(
   } catch (err) {
     log.warn("perpDexs unavailable", { err: String(err) });
   }
-  if (dexFilter) dexNames = dexNames.filter((n) => n.toLowerCase() === dexFilter);
+  if (dexFilter) dexNames = dexNames.filter((n) => n === dexFilter);
 
   for (const dex of dexNames.slice(0, MAX_DEXS)) {
     try {
@@ -135,7 +138,7 @@ async function collectHip3Rows(
   }
 
   let rows = [...byCoin.values()];
-  if (dexFilter) rows = rows.filter((r) => r.coin.toLowerCase().startsWith(`${dexFilter}:`));
+  if (dexFilter) rows = rows.filter((r) => r.coin.startsWith(`${dexFilter}:`));
   // Dexs past MAX_DEXS are named, not silently dropped: pass `dex` to scan one.
   return { rows, dexsScanned, dexsFailed, dexsNotScanned: dexNames.slice(MAX_DEXS) };
 }

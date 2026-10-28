@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { ToolDef } from "../registry.js";
 import { assertAddress, num, round, sharpe } from "../../core/format.js";
-import { normalizeAccount, accountStateFor, dexArg } from "../../hl/account.js";
+import { normalizeAccount, accountStateFor, resolveDexArg } from "../../hl/account.js";
 import { ANALYTICS_DISCLAIMER } from "../../hl/whales.js";
 
 /**
@@ -43,7 +43,7 @@ export const portfolioRisk: ToolDef = {
     const address = assertAddress(String(args.address));
     const shocks = (args.shocks as number[] | undefined)?.length ? (args.shocks as number[]) : [-0.05, -0.1, -0.2];
 
-    const state = await accountStateFor(ctx.hl, address, dexArg(args.dex));
+    const state = await accountStateFor(ctx.hl, address, await resolveDexArg(ctx.hl, args.dex));
     const acct = normalizeAccount(state);
     const equity = acct.accountValue;
     const totalNtl = acct.positions.reduce((a, p) => a + Math.abs(p.positionValueUsd), 0);

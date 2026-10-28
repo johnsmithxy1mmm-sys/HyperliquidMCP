@@ -61,23 +61,40 @@ export function normalizeAccount(state: ClearinghouseState): NormalizedAccount {
   };
 }
 
-/** A `dex` argument as the API names it: lowercase, and "main" (what outputs report) is the main dex. */
+/** A `dex` argument: trimmed; "main" (what outputs report) is the main dex, "all" every dex. */
 export function dexArg(raw: unknown): string | undefined {
-  const dex = typeof raw === "string" ? raw.trim().toLowerCase() : "";
-  return dex && dex !== "main" ? dex : undefined;
+  const dex = typeof raw === "string" ? raw.trim() : "";
+  const lower = dex.toLowerCase();
+  if (!dex || lower === "main") return undefined;
+  return lower === "all" ? "all" : dex;
+}
+
+/** A `dex` argument resolved to the live dex's exact name ("all" and the main dex pass through). */
+export async function resolveDexArg(
+  hl: { perpDexs(): Promise<Array<{ name?: string } | null>> },
+  raw: unknown,
+): Promise<string | undefined> {
+  const dex = dexArg(raw);
+  return dex && dex !== "all" ? resolveDex(hl, dex) : dex;
 }
 
 /**
- * Throw unless `dex` is a live HIP-3 dex: the API answers an unknown name with
- * null, which reads as an empty account or crashes the caller.
+ * The live HIP-3 dex `dex` names, by exact name first, else case-insensitively
+ * when only one dex matches (testnet has "VOLMEX" and "volmex"). Throws
+ * otherwise: the API answers an unknown name with null, which reads as an empty
+ * account or crashes the caller.
  */
-export async function assertKnownDex(hl: { perpDexs(): Promise<Array<{ name?: string } | null>> }, dex: string): Promise<void> {
+export async function resolveDex(hl: { perpDexs(): Promise<Array<{ name?: string } | null>> }, dex: string): Promise<string> {
   const names = (await hl.perpDexs()).flatMap((d) => (d?.name ? [d.name] : []));
-  if (names.includes(dex)) return;
+  if (names.includes(dex)) return dex;
+  const matches = names.filter((n) => n.toLowerCase() === dex.toLowerCase());
+  if (matches.length === 1) return matches[0];
   throw new ToolError(
     "unknown_dex",
-    `Unknown perp dex "${dex}". Known HIP-3 dexes: ${names.join(", ")}. Omit dex for the main dex.`,
-    { knownDexs: names },
+    matches.length > 1
+      ? `Perp dex "${dex}" matches ${matches.join(", ")}, which differ only in case. Pass the exact name.`
+      : `Unknown perp dex "${dex}". Known HIP-3 dexes: ${names.join(", ")}. Omit dex for the main dex.`,
+    { knownDexs: matches.length > 1 ? matches : names },
   );
 }
 
@@ -92,8 +109,7 @@ export async function accountStateFor(
   dex?: string,
 ): Promise<ClearinghouseState> {
   if (dex !== "all") {
-    if (dex) await assertKnownDex(hl, dex);
-    return hl.clearinghouseState(user, dex || undefined);
+    return hl.clearinghouseState(user, dex ? await resolveDex(hl, dex) : undefined);
   }
   const builderDexs = (await hl.perpDexs()).flatMap((d) => (d?.name ? [d.name] : []));
   const states = await Promise.all([hl.clearinghouseState(user), ...builderDexs.map((d) => hl.clearinghouseState(user, d))]);

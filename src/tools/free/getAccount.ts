@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { ToolDef } from "../registry.js";
 import { assertAddress, round } from "../../core/format.js";
-import { normalizeAccount, accountStateFor, dexArg } from "../../hl/account.js";
+import { normalizeAccount, accountStateFor, resolveDexArg } from "../../hl/account.js";
 
 export const getAccount: ToolDef = {
   name: "hl_get_account",
@@ -26,7 +26,7 @@ export const getAccount: ToolDef = {
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   run: async (args, ctx) => {
     const address = assertAddress(String(args.address));
-    const state = await accountStateFor(ctx.hl, address, dexArg(args.dex));
+    const state = await accountStateFor(ctx.hl, address, await resolveDexArg(ctx.hl, args.dex));
     const acct = normalizeAccount(state);
     const marginUtilization = acct.accountValue > 0 ? round(acct.totalMarginUsed / acct.accountValue, 4) : 0;
 
