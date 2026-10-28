@@ -49,7 +49,7 @@ import { resolveTarget } from "../apify-actor/target.js";
 import { createAlert } from "../src/tools/premium/alerts.js";
 import { registerTool, type ToolDef } from "../src/tools/registry.js";
 import { BillingService } from "../src/billing/service.js";
-import { ToolError } from "../src/core/errors.js";
+import { ToolError, UpstreamError } from "../src/core/errors.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import express from "express";
 import type { AddressInfo } from "node:net";
@@ -1977,4 +1977,32 @@ test("server.json matches package.json for the MCP Registry", async () => {
   assert.equal(server.packages[0].identifier, pkg.name);
   assert.equal(server.packages[0].version, pkg.version);
   assert.ok(server.description.length <= 100, "the registry rejects descriptions over 100 characters");
+});
+
+/** Registers `run` as a free tool and returns what a client receives for one call. */
+async function freeToolResult(run: ToolDef["run"]) {
+  let handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }>; structuredContent: Record<string, unknown> }> =
+    async () => ({ content: [], structuredContent: {} });
+  const server = { registerTool: (_n: string, _c: unknown, h: typeof handler) => { handler = h; } } as unknown as McpServer;
+  const def: ToolDef = { name: "hl_test_errors", tier: "free", title: "t", description: "d", inputSchema: {}, annotations: {}, run };
+  registerTool(server, def, { mode: "http" } as unknown as ToolContext);
+  return handler({});
+}
+
+test("an unexpected error reaches the client as an id, not its internal text", async () => {
+  const result = await freeToolResult(async () => {
+    throw new Error("SQLITE_CORRUPT: database disk image is malformed (/app/data/hypersignal.db)");
+  });
+
+  assert.ok(!JSON.stringify(result).includes("SQLITE"), "internal details must stay in the server log");
+  assert.match(String(result.structuredContent.errorId), /^[0-9a-f]{8}$/);
+});
+
+test("an upstream error does not forward a slice of the upstream response body", async () => {
+  const result = await freeToolResult(async () => {
+    throw new UpstreamError("Hyperliquid returned HTTP 502", { status: 502, bodyPreview: "<html>internal gateway trace</html>" });
+  });
+
+  assert.equal(result.structuredContent.bodyPreview, undefined);
+  assert.equal(result.structuredContent.status, 502);
 });
