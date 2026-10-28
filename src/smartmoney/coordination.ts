@@ -20,7 +20,17 @@ export interface CoordinationPair {
 export interface CoordinationResult {
   pairs: CoordinationPair[];
   clusters: string[][];
+  /** Wallets with enough open coins to be compared at all. */
+  compared: number;
 }
+
+/**
+ * Below this many open coins every same-direction book has cosine 1.0 (all
+ * BTC longs look identical), and union-find chains them into one "entity".
+ */
+export const MIN_COINS_FOR_SIMILARITY = 3;
+/** Strongest pairs returned; clustering still uses every linked pair. */
+const MAX_PAIRS = 50;
 
 export function cosineSimilarity(a: Map<string, number>, b: Map<string, number>): number {
   let dot = 0;
@@ -36,7 +46,10 @@ export function cosineSimilarity(a: Map<string, number>, b: Map<string, number>)
 
 /** Detect co-moving wallets. Pairs above `threshold` become edges; connected
  * components (union-find) form clusters of ≥2 addresses. */
-export function detectCoordination(wallets: WalletVector[], threshold = 0.9): CoordinationResult {
+export function detectCoordination(allWallets: WalletVector[], threshold = 0.9): CoordinationResult {
+  const wallets = allWallets.filter(
+    (w) => [...w.vec.values()].filter((v) => v !== 0).length >= MIN_COINS_FOR_SIMILARITY,
+  );
   const pairs: CoordinationPair[] = [];
   const parent = new Map<string, string>();
   for (const w of wallets) parent.set(w.address, w.address);
@@ -79,5 +92,5 @@ export function detectCoordination(wallets: WalletVector[], threshold = 0.9): Co
   const clusters = [...groups.values()].filter((g) => g.length >= 2).sort((a, b) => b.length - a.length);
 
   pairs.sort((p, q) => q.similarity - p.similarity);
-  return { pairs, clusters };
+  return { pairs: pairs.slice(0, MAX_PAIRS), clusters, compared: wallets.length };
 }

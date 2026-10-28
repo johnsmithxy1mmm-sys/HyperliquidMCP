@@ -62,6 +62,8 @@ import { twapOrder, cancelExecution } from "../src/tools/trading/execution.js";
 import { ExecutionRunner } from "../src/execution/runner.js";
 import { traderReport } from "../src/tools/premium/traderReport.js";
 import { hip3Analytics } from "../src/tools/premium/hip3Analytics.js";
+import { PolymarketClient } from "../src/polymarket/client.js";
+import { vaultScreener } from "../src/tools/premium/vaultScreener.js";
 
 test("formatSize rounds to szDecimals", () => {
   assert.equal(formatSize(1.23456789, 3), "1.235");
@@ -324,9 +326,9 @@ test("cosineSimilarity + detectCoordination cluster co-moving wallets", () => {
   const mk = (address: string, e: [string, number][]): WalletVector => ({ address, vec: new Map(e) });
   // A and B mirror each other; C is opposite; D unrelated
   const wallets = [
-    mk("A", [["BTC", 0.7], ["ETH", 0.3]]),
-    mk("B", [["BTC", 0.72], ["ETH", 0.28]]),
-    mk("C", [["BTC", -0.7], ["ETH", -0.3]]),
+    mk("A", [["BTC", 0.6], ["ETH", 0.3], ["SOL", 0.1]]),
+    mk("B", [["BTC", 0.62], ["ETH", 0.28], ["SOL", 0.1]]),
+    mk("C", [["BTC", -0.6], ["ETH", -0.3], ["SOL", -0.1]]),
     mk("D", [["SOL", 1]]),
   ];
   assert.ok(cosineSimilarity(wallets[0].vec, wallets[1].vec) > 0.99);
@@ -1653,4 +1655,77 @@ test("hl_hip3_analytics lists the builder dexs it did not scan", async () => {
   const { data } = await hip3Analytics.run({}, ctx);
 
   assert.deepEqual((data as { dexsNotScanned: string[] }).dexsNotScanned, ["dex10", "dex11"]);
+});
+
+test("Polymarket markets are fetched by 24h volume across several pages, not the first 500 returned", async () => {
+  const urls: string[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: unknown) => {
+    urls.push(String(url));
+    const offset = Number(new URL(String(url)).searchParams.get("offset") ?? 0);
+    const page = offset < 1000 ? Array.from({ length: 500 }, (_, i) => ({
+      question: `Q${offset + i}`, slug: `s${offset + i}`, outcomes: '["Yes","No"]', outcomePrices: '["0.5","0.5"]',
+    })) : [];
+    return new Response(JSON.stringify(page), { status: 200 });
+  }) as typeof fetch;
+  let markets: unknown[] = [];
+  try {
+    const client = new PolymarketClient({
+      polymarket: { gammaUrl: "http://gamma.test" }, requestTimeoutMs: 1000,
+    } as unknown as Config);
+    markets = await client.activeMarkets();
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  assert.ok(urls.every((u) => u.includes("order=volume24hr") && u.includes("ascending=false")));
+  assert.equal(markets.length, 1000);
+});
+
+test("hl_vault_screener does not read a withdrawal as a drawdown", async () => {
+  const vault = "0x9999999999999999999999999999999999999999";
+  // Followers withdrew half the vault; the strategy itself made and lost nothing.
+  const details = {
+    name: "flat", leader: vault, apr: 0, followers: [],
+    portfolio: [["allTime", {
+      accountValueHistory: [[0, "2000"], [1, "1000"], [2, "1000"]],
+      pnlHistory: [[0, "0"], [1, "0"], [2, "0"]],
+    }]],
+  };
+  const ctx = { config: { vaultAddresses: [] }, hl: { rawInfo: async () => details } } as unknown as ToolContext;
+
+  const { data } = await vaultScreener.run({ vaults: [vault] }, ctx);
+
+  assert.equal((data as { vaults: Array<{ maxDrawdownPct: number }> }).vaults[0].maxDrawdownPct, 0);
+});
+
+test("hl_vault_screener caps how many vaults one call may fan out to", () => {
+  const vaults = Array.from({ length: 51 }, (_, i) => `0x${String(i).padStart(40, "0")}`);
+
+  assert.equal(vaultScreener.inputSchema.vaults?.safeParse(vaults).success, false);
+});
+
+test("detectCoordination does not call single-coin books the same entity", () => {
+  // Twenty unrelated whales that are simply long BTC all have cosine 1.0.
+  const wallets: WalletVector[] = Array.from({ length: 20 }, (_, i) => ({
+    address: `W${i}`,
+    vec: new Map([["BTC", 1 + i]]),
+  }));
+
+  const { clusters, pairs } = detectCoordination(wallets, 0.9);
+
+  assert.equal(clusters.length, 0);
+  assert.equal(pairs.length, 0);
+});
+
+test("detectCoordination returns at most 50 pairs, strongest first", () => {
+  const wallets: WalletVector[] = Array.from({ length: 60 }, (_, i) => ({
+    address: `M${i}`,
+    vec: new Map([["BTC", 0.5], ["ETH", 0.3 + i / 1000], ["SOL", 0.2]]),
+  }));
+
+  const { pairs } = detectCoordination(wallets, 0.9);
+
+  assert.equal(pairs.length, 50);
+  assert.ok(pairs.every((p, i) => i === 0 || pairs[i - 1].similarity >= p.similarity));
 });

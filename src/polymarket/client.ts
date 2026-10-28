@@ -32,16 +32,32 @@ interface RawMarket {
 }
 
 const cache = new TtlLruCache();
+const GAMMA_PAGE_SIZE = 500;
+const GAMMA_MAX_PAGES = 3;
 
 export class PolymarketClient {
   constructor(private readonly config: Config) {}
 
-  /** Active, non-closed markets sorted by liquidity (cached ~60s). */
-  async activeMarkets(maxMarkets = 500): Promise<PolymarketMarket[]> {
+  /**
+   * Active, non-closed markets sorted by liquidity (cached ~60s).
+   *
+   * Requested by 24h volume, several pages deep: without an order Gamma returns
+   * an arbitrary first page, which need not contain the ladders worth scanning.
+   */
+  async activeMarkets(maxMarkets = GAMMA_PAGE_SIZE * GAMMA_MAX_PAGES): Promise<PolymarketMarket[]> {
     return cache.getOrLoad<PolymarketMarket[]>(`pm:active:${maxMarkets}`, TTL.heavyAggregation, async () => {
-      const url = `${this.config.polymarket.gammaUrl.replace(/\/$/, "")}/markets?active=true&closed=false&limit=${maxMarkets}`;
-      const raw = await this.get<RawMarket[]>(url);
-      const markets = (raw ?? [])
+      const base = `${this.config.polymarket.gammaUrl.replace(/\/$/, "")}/markets?active=true&closed=false`;
+      const raw: RawMarket[] = [];
+      for (let offset = 0; offset < maxMarkets; offset += GAMMA_PAGE_SIZE) {
+        const limit = Math.min(GAMMA_PAGE_SIZE, maxMarkets - offset);
+        const page = await this.get<RawMarket[]>(
+          `${base}&order=volume24hr&ascending=false&limit=${limit}&offset=${offset}`,
+        );
+        if (!page || page.length === 0) break;
+        raw.push(...page);
+        if (page.length < limit) break;
+      }
+      const markets = raw
         .filter((m) => m.closed !== true && m.question)
         .map((m) => this.normalize(m))
         .filter((m): m is PolymarketMarket => m !== null);

@@ -35,7 +35,7 @@ export const vaultScreener: ToolDef = {
     "Provide `vaults` (list of vault 0x addresses) or set HL_VAULT_ADDRESSES. Metrics derived from vault history. " +
     ANALYTICS_DISCLAIMER,
   inputSchema: {
-    vaults: z.array(z.string()).optional().describe("Vault 0x addresses to screen; else HL_VAULT_ADDRESSES."),
+    vaults: z.array(z.string()).max(50).optional().describe("Vault 0x addresses to screen (max 50); else HL_VAULT_ADDRESSES."),
     sort: z.enum(["apr", "sharpe", "sortino", "tvl", "maxDrawdown"]).default("sharpe"),
     minTvlUsd: z.number().min(0).default(0),
   },
@@ -71,7 +71,7 @@ export const vaultScreener: ToolDef = {
     await Promise.all(
       list.map(async (vaultAddress) => {
         try {
-          const d = await ctx.hl.rawInfo<VaultDetails>({ type: "vaultDetails", vaultAddress }, 2);
+          const d = await ctx.hl.rawInfo<VaultDetails>({ type: "vaultDetails", vaultAddress });
           if (!d || (!d.portfolio && !d.followers)) {
             unavailable.push(vaultAddress);
             return;
@@ -115,11 +115,20 @@ function deriveMetrics(d: VaultDetails): Record<string, unknown> {
   const periods = new Map((d.portfolio ?? []).map(([k, v]) => [k, v]));
   const allTime = periods.get("allTime") ?? periods.get("month") ?? periods.get("week");
   const avHistory = allTime?.accountValueHistory ?? [];
-  const equity = avHistory.map(([, v]) => num(v)).filter((x) => x > 0);
+  // Returns from PnL over the prior account value, not account value changes:
+  // deposits and withdrawals move account value without being performance, so
+  // a withdrawal read as a drawdown and a deposit as a gain.
+  const pnlAt = new Map((allTime?.pnlHistory ?? []).map(([t, v]) => [t, num(v)]));
   const returns: number[] = [];
-  for (let i = 1; i < equity.length; i++) {
-    if (equity[i - 1] > 0) returns.push((equity[i] - equity[i - 1]) / equity[i - 1]);
+  for (let i = 1; i < avHistory.length; i++) {
+    const prevValue = num(avHistory[i - 1][1]);
+    const pnlNow = pnlAt.get(avHistory[i][0]);
+    const pnlPrev = pnlAt.get(avHistory[i - 1][0]);
+    if (prevValue > 0 && pnlNow !== undefined && pnlPrev !== undefined) returns.push((pnlNow - pnlPrev) / prevValue);
   }
+  // Flow-free performance index for drawdown.
+  const equity = [1];
+  for (const r of returns) equity.push(equity[equity.length - 1] * (1 + r));
 
   const followers = d.followers ?? [];
   const tvlUsd = followers.reduce((a, f) => a + num(f.vaultEquity), 0);
