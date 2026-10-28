@@ -3,6 +3,7 @@ import type { ToolDef } from "../registry.js";
 import { assertAddress, num, round, sharpe } from "../../core/format.js";
 import { ANALYTICS_DISCLAIMER } from "../../hl/whales.js";
 import { estimateHoldMinutes } from "../../smartmoney/profile.js";
+import { MAX_AVAILABLE_FILLS } from "../../core/hlClient.js";
 
 /**
  * Full trader breakdown from fills: winrate, average R (win/loss ratio),
@@ -16,7 +17,8 @@ export const traderReport: ToolDef = {
   description:
     "Behavioral report for any wallet from its fills: winrate, average R (avg win / avg loss), total realized PnL, " +
     "PnL curve, holding-time style (scalp vs swing), fees paid, and most-traded coins. Lookback in days " +
-    "(the API caps at the ~2000 most recent fills in the window, so very active wallets are partially sampled). " +
+    "(Hyperliquid serves only a wallet's 10,000 most recent fills; `historyTruncated` says when that cut the " +
+    "window short, so very active wallets are covered only for their latest trades). " +
     ANALYTICS_DISCLAIMER,
   inputSchema: {
     address: z.string().describe("EVM 0x address."),
@@ -38,6 +40,8 @@ export const traderReport: ToolDef = {
     avgHoldMinutes: z.number().nullable(),
     topCoins: z.array(z.record(z.any())),
     pnlCurve: z.array(z.record(z.any())),
+    fillsAnalyzed: z.number(),
+    historyTruncated: z.boolean(),
     disclaimer: z.string(),
   },
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
@@ -114,6 +118,8 @@ export const traderReport: ToolDef = {
         avgHoldMinutes,
         topCoins,
         pnlCurve,
+        fillsAnalyzed: fills.length,
+        historyTruncated: fills.length >= MAX_AVAILABLE_FILLS,
         disclaimer: ANALYTICS_DISCLAIMER,
       },
     };

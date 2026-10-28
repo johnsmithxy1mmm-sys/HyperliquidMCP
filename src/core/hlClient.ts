@@ -30,6 +30,10 @@ const WEIGHT_INFO = 20;
 const ITEMS_PER_WEIGHT = 20;
 const CANDLES_PER_WEIGHT = 60;
 
+/** Hyperliquid serves only a user's 10,000 most recent fills, however they are paged. */
+export const MAX_AVAILABLE_FILLS = 10_000;
+const TIME_RANGE_PAGE_LIMIT = 500;
+const FUNDING_MAX_PAGES = 10;
 const FILLS_PAGE_LIMIT = 2000;
 /** Hard bound on paging so one wallet can never monopolize the weight budget. */
 const FILLS_MAX_PAGES = 10;
@@ -107,9 +111,29 @@ export class HyperliquidClient {
 
   fundingHistory(coin: string, startTime: number, endTime?: number): Promise<FundingHistoryEntry[]> {
     const key = `funding:${coin}:${startTime}:${endTime ?? "now"}`;
-    const body: Record<string, unknown> = { type: "fundingHistory", coin, startTime };
-    if (endTime !== undefined) body.endTime = endTime;
-    return this.cache.getOrLoad(key, TTL.candles, () => this.info<FundingHistoryEntry[]>(body, WEIGHT_INFO, ITEMS_PER_WEIGHT));
+    return this.cache.getOrLoad(key, TTL.candles, () => this.fetchAllFunding(coin, startTime, endTime));
+  }
+
+  /**
+   * Time-range info responses hold at most 500 entries (Hyperliquid docs), so a
+   * window over ~21 days of hourly funding was silently cut. Page forward from
+   * the last returned time, bounded like fills.
+   */
+  private async fetchAllFunding(coin: string, startTime: number, endTime?: number): Promise<FundingHistoryEntry[]> {
+    const all: FundingHistoryEntry[] = [];
+    let cursor = startTime;
+    for (let page = 0; page < FUNDING_MAX_PAGES; page++) {
+      const body: Record<string, unknown> = { type: "fundingHistory", coin, startTime: cursor };
+      if (endTime !== undefined) body.endTime = endTime;
+      const batch = await this.info<FundingHistoryEntry[]>(body, WEIGHT_INFO, ITEMS_PER_WEIGHT);
+      if (!Array.isArray(batch) || batch.length === 0) break;
+      all.push(...batch);
+      if (batch.length < TIME_RANGE_PAGE_LIMIT) break;
+      const lastTime = batch.reduce((m, e) => Math.max(m, Number(e.time) || 0), 0);
+      if (lastTime < cursor) break;
+      cursor = lastTime + 1;
+    }
+    return all;
   }
 
   // ---- Account state ---------------------------------------------------------

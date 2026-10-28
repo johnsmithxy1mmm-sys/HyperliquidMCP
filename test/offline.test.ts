@@ -60,6 +60,8 @@ import { whalePositions } from "../src/tools/premium/whalePositions.js";
 import { smartMoneyScore } from "../src/tools/premium/smartMoney.js";
 import { twapOrder, cancelExecution } from "../src/tools/trading/execution.js";
 import { ExecutionRunner } from "../src/execution/runner.js";
+import { traderReport } from "../src/tools/premium/traderReport.js";
+import { hip3Analytics } from "../src/tools/premium/hip3Analytics.js";
 
 test("formatSize rounds to szDecimals", () => {
   assert.equal(formatSize(1.23456789, 3), "1.235");
@@ -1581,4 +1583,74 @@ test("hl_cancel_execution stops a running plan", async () => {
   const { data } = await cancelExecution.run({ planId: plan.id }, ctx);
 
   assert.equal((data as { status: string }).status, "cancelled");
+});
+
+test("Polymarket 'Up or Down' markets are direction bets, not price thresholds", () => {
+  assert.equal(parseThresholdMarket("Solana Up or Down - October 28"), null);
+});
+
+test("Polymarket parser skips a day-of-month next to a month name", () => {
+  assert.equal(parseThresholdMarket("Will XRP hit 3 by October 28?")?.thresholdUsd, 3);
+});
+
+test("Polymarket parser refuses a percentage move as a price", () => {
+  assert.equal(parseThresholdMarket("Will SOL rise 10% this week?"), null);
+});
+
+test("Polymarket 'exceed / fall below ... by <date>' resolves on a touch, not at expiry", () => {
+  assert.equal(parseThresholdMarket("Will Bitcoin exceed $150k by December 31?")?.mode, "touch");
+  assert.equal(parseThresholdMarket("Will Ethereum fall below $2,000 by December 31?")?.mode, "touch_below");
+  // "be above ... on <date>" is still a reading at the date.
+  assert.equal(parseThresholdMarket("Will Bitcoin be above $100k on December 31?")?.mode, "above");
+});
+
+test("fundingHistory pages past Hyperliquid's 500-entry response cap", async () => {
+  const HOUR = 3_600_000;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (_url: unknown, init?: { body?: unknown }) => {
+    const { startTime } = JSON.parse(String(init?.body)) as { startTime: number };
+    // 30 days of hourly funding = 720 entries; each response holds at most 500.
+    const entries = [];
+    for (let t = Math.ceil(startTime / HOUR) * HOUR; t < 720 * HOUR && entries.length < 500; t += HOUR) {
+      entries.push({ coin: "BTC", fundingRate: "0.0000125", premium: "0", time: t });
+    }
+    return new Response(JSON.stringify(entries), { status: 200 });
+  }) as typeof fetch;
+  let history: unknown[] = [];
+  try {
+    const hl = new HyperliquidClient({
+      infoBaseUrl: "http://hl.test/info", requestTimeoutMs: 1000, maxRetries: 0, rateWeightPerMin: 100_000,
+    } as unknown as Config);
+    history = await hl.fundingHistory("BTC", 0, 720 * HOUR);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  assert.equal(history.length, 720);
+});
+
+test("hl_trader_report flags history cut at Hyperliquid's 10,000 most recent fills", async () => {
+  const fills = Array.from({ length: 10_000 }, (_, i) => ({
+    coin: "BTC", px: "60000", sz: "0.01", side: "B", time: i, closedPnl: i % 2 ? "5" : "-3", fee: "0.1", dir: "Close Long",
+  }));
+  const ctx = { hl: { userFillsByTime: async () => fills } } as unknown as ToolContext;
+
+  const { data } = await traderReport.run({ address: "0x8888888888888888888888888888888888888888" }, ctx);
+
+  assert.equal((data as { historyTruncated: boolean }).historyTruncated, true);
+});
+
+test("hl_hip3_analytics lists the builder dexs it did not scan", async () => {
+  const dexs = Array.from({ length: 12 }, (_, i) => ({ name: `dex${i}` }));
+  const ctx = {
+    hl: {
+      metaAndAssetCtxs: async () => [{ universe: [] }, []],
+      perpDexs: async () => [null, ...dexs],
+      metaAndAssetCtxsForDex: async () => [{ universe: [] }, []],
+    },
+  } as unknown as ToolContext;
+
+  const { data } = await hip3Analytics.run({}, ctx);
+
+  assert.deepEqual((data as { dexsNotScanned: string[] }).dexsNotScanned, ["dex10", "dex11"]);
 });
