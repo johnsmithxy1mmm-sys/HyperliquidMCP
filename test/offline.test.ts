@@ -2222,3 +2222,31 @@ test("the public track record page escapes what it renders", async () => {
   assert.ok(!html.includes("<script>") && !html.includes("<img"), "every value is HTML-escaped");
   assert.ok(html.includes("insufficient_data"));
 });
+
+test("the server exposes proof resources and briefing prompts to MCP clients", async () => {
+  const { registerResourcesAndPrompts } = await import("../src/mcp/resourcesAndPrompts.js");
+  const resources = new Map<string, (uri: URL) => Promise<{ contents: Array<{ text: string }> }>>();
+  const prompts = new Map<string, (args: Record<string, string>) => Promise<{ messages: Array<{ content: { text: string } }> }>>();
+  const server = {
+    registerResource: (name: string, _uri: string, _meta: unknown, read: (uri: URL) => Promise<{ contents: Array<{ text: string }> }>) =>
+      resources.set(name, read),
+    registerPrompt: (name: string, _cfg: unknown, cb: (args: Record<string, string>) => Promise<{ messages: Array<{ content: { text: string } }> }>) =>
+      prompts.set(name, cb),
+  } as unknown as McpServer;
+  const ctx = {
+    store: {
+      signals: { trackRecord: () => [{ type: "funding_apr", total: 2, scored: 1, wins: 1, hitRatePct: 100, avgReturnPct: 1, medianReturnPct: 1, excludedStale: 0 }] },
+      scores: { outcomes: () => [], counts: () => ({ total: 0, resolved: 0, pending: 0 }), abandoned: () => 0 },
+    },
+    signer: { publicKey: () => "PUBKEY", ephemeral: false },
+  } as unknown as ToolContext;
+
+  registerResourcesAndPrompts(server, ctx, "1.7.0");
+
+  assert.deepEqual([...resources.keys()].sort(), ["about", "calibration", "signal-pubkey", "track-record"]);
+  assert.deepEqual([...prompts.keys()].sort(), ["funding_carry_scan", "wallet_risk_check", "whale_briefing"]);
+  const record = JSON.parse((await resources.get("track-record")!(new URL("hypersignal://track-record"))).contents[0].text);
+  assert.equal(record[0].hitRatePct, 100);
+  const briefing = (await prompts.get("whale_briefing")!({ coin: "ETH" })).messages[0].content.text;
+  assert.ok(briefing.includes("hl_whale_positions") && briefing.includes("ETH"));
+});
