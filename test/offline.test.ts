@@ -1488,3 +1488,42 @@ test("hl_twap_order refuses more slices than the size has lots", async () => {
     (err: unknown) => err instanceof ToolError && err.code === "bad_plan" && /at most 3 slices/.test(err.message),
   );
 });
+
+/** A TradingService able to submit, over one BTC market at $60,000 (szDecimals 5). */
+function cappedTrading(maxOrderNotionalUsd: number) {
+  const config = {
+    tradingEnabled: true,
+    agentPrivateKey: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80", // Hardhat #0 (test-only)
+    builder: { address: undefined, feeTenthsBps: 5 },
+    network: "testnet",
+    maxOrderNotionalUsd,
+  } as unknown as Config;
+  return new TradingService(config, (tradingCtx(5) as unknown as { hl: HyperliquidClient }).hl);
+}
+
+test("placeOrder refuses an order above the operator's notional cap, even when confirmed", async () => {
+  // 1 BTC at ~$60k against a $10k cap; refused before anything is signed.
+  await assert.rejects(
+    cappedTrading(10_000).placeOrder({ coin: "BTC", isBuy: true, sz: 1, reduceOnly: false, tif: "Ioc" }, { confirm: true, dryRun: true }),
+    (err: unknown) => err instanceof ToolError && err.code === "order_too_large",
+  );
+});
+
+test("placeOrder lets a reduce-only order through the notional cap so a position can always be closed", async () => {
+  const res = await cappedTrading(10_000).placeOrder(
+    { coin: "BTC", isBuy: false, sz: 1, reduceOnly: true, tif: "Ioc" },
+    { confirm: true, dryRun: true },
+  );
+
+  assert.equal(res.mode, "dry_run");
+});
+
+test("hl_twap_order refuses up front when a slice would exceed the per-order cap", async () => {
+  const ctx = { ...(tradingCtx(5) as object), config: { maxOrderNotionalUsd: 10_000 } } as unknown as ToolContext;
+
+  // 2 BTC over 4 slices: 0.5 BTC (~$30k) per slice against a $10k cap.
+  await assert.rejects(
+    twapOrder.run({ coin: "BTC", side: "buy", totalSize: 2, slices: 4, durationMinutes: 10 }, ctx),
+    (err: unknown) => err instanceof ToolError && err.code === "order_too_large",
+  );
+});

@@ -154,6 +154,19 @@ export class TradingService {
       );
     }
 
+    // Operator cap, checked in preview too: confirm/dryRun come from the model,
+    // so a prompt-injected agent must not be able to size an order freely.
+    // Reduce-only is exempt so a position can always be closed.
+    const notionalUsd = Number(order.s) * Number(order.p);
+    if (!params.reduceOnly && notionalUsd > this.config.maxOrderNotionalUsd) {
+      throw new ToolError(
+        "order_too_large",
+        `Order notional $${Math.round(notionalUsd)} exceeds the $${this.config.maxOrderNotionalUsd} per-order cap ` +
+          `(HL_MAX_ORDER_NOTIONAL_USD). Reduce the size or split it with hl_twap_order.`,
+        { notionalUsd, capUsd: this.config.maxOrderNotionalUsd },
+      );
+    }
+
     const builder = this.builder();
     // Key order matters for msgpack determinism: type, orders, grouping, [builder].
     const action: Record<string, unknown> = { type: "order", orders: [order], grouping: "na" };

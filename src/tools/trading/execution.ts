@@ -66,6 +66,17 @@ export const twapOrder: ToolDef = {
         { lots: children.length, szDecimals: market.szDecimals },
       );
     }
+    // Each slice meets the per-order cap at fire time; refuse now rather than
+    // schedule a plan whose slices would all be rejected mid-run.
+    const largestSliceUsd = Math.max(...children.map((c) => c.size)) * market.markPx;
+    if (args.reduceOnly !== true && largestSliceUsd > ctx.config.maxOrderNotionalUsd) {
+      throw new ToolError(
+        "order_too_large",
+        `Each slice is ~$${Math.round(largestSliceUsd)}, above the $${ctx.config.maxOrderNotionalUsd} per-order cap ` +
+          `(HL_MAX_ORDER_NOTIONAL_USD). Use more slices or a smaller totalSize.`,
+        { sliceNotionalUsd: largestSliceUsd, capUsd: ctx.config.maxOrderNotionalUsd },
+      );
+    }
 
     const isBuy = args.side === "buy";
     const live = args.confirm === true && args.dryRun !== true;
