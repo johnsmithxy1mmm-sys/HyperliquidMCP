@@ -1,7 +1,8 @@
 import { z } from "zod";
 import type { ToolDef } from "../registry.js";
 import { resolveCohort } from "../../hl/cohort.js";
-import { fetchCohortAccounts, aggregateByCoin, cohortSizeFor, dexArg, ANALYTICS_DISCLAIMER } from "../../hl/whales.js";
+import { fetchCohortAccounts, aggregateByCoin, cohortSizeFor, ANALYTICS_DISCLAIMER } from "../../hl/whales.js";
+import { dexArg } from "../../hl/account.js";
 import { round, shortHash } from "../../core/format.js";
 
 /**

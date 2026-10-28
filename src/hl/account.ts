@@ -4,6 +4,7 @@
  */
 import type { ClearinghouseState } from "./types.js";
 import { num, round } from "../core/format.js";
+import { ToolError } from "../core/errors.js";
 
 export interface NormalizedPosition {
   coin: string;
@@ -60,6 +61,26 @@ export function normalizeAccount(state: ClearinghouseState): NormalizedAccount {
   };
 }
 
+/** A `dex` argument as the API names it: lowercase, and "main" (what outputs report) is the main dex. */
+export function dexArg(raw: unknown): string | undefined {
+  const dex = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  return dex && dex !== "main" ? dex : undefined;
+}
+
+/**
+ * Throw unless `dex` is a live HIP-3 dex: the API answers an unknown name with
+ * null, which reads as an empty account or crashes the caller.
+ */
+export async function assertKnownDex(hl: { perpDexs(): Promise<Array<{ name?: string } | null>> }, dex: string): Promise<void> {
+  const names = (await hl.perpDexs()).flatMap((d) => (d?.name ? [d.name] : []));
+  if (names.includes(dex)) return;
+  throw new ToolError(
+    "unknown_dex",
+    `Unknown perp dex "${dex}". Known HIP-3 dexes: ${names.join(", ")}. Omit dex for the main dex.`,
+    { knownDexs: names },
+  );
+}
+
 /**
  * Perp account state on the main dex (no `dex`), one HIP-3 builder dex, or all
  * of them ("all"): each dex keeps its own margin, so "all" sums the margin
@@ -70,7 +91,10 @@ export async function accountStateFor(
   user: string,
   dex?: string,
 ): Promise<ClearinghouseState> {
-  if (dex !== "all") return hl.clearinghouseState(user, dex || undefined);
+  if (dex !== "all") {
+    if (dex) await assertKnownDex(hl, dex);
+    return hl.clearinghouseState(user, dex || undefined);
+  }
   const builderDexs = (await hl.perpDexs()).flatMap((d) => (d?.name ? [d.name] : []));
   const states = await Promise.all([hl.clearinghouseState(user), ...builderDexs.map((d) => hl.clearinghouseState(user, d))]);
   const sum = (pick: (s: ClearinghouseState) => string) => String(states.reduce((a, s) => a + num(pick(s)), 0));

@@ -4,7 +4,7 @@
  * hl_whale_flow_alerts, and hl_liquidation_map.
  */
 import type { ToolContext } from "../tools/registry.js";
-import { normalizeAccount, accountStateFor, type NormalizedAccount, type NormalizedPosition } from "./account.js";
+import { normalizeAccount, accountStateFor, assertKnownDex, type NormalizedAccount, type NormalizedPosition } from "./account.js";
 import { round } from "../core/format.js";
 import { log } from "../logger.js";
 
@@ -18,12 +18,6 @@ export interface CohortAccount {
  * dex (11 live), so 20 wallets stay well under the per-minute rate budget.
  */
 export const MAX_WALLETS_ALL_DEXES = 20;
-
-/** A `dex` argument as the API names it: lowercase, and "main" (what outputs report) is the main dex. */
-export function dexArg(raw: unknown): string | undefined {
-  const dex = typeof raw === "string" ? raw.trim().toLowerCase() : "";
-  return dex && dex !== "main" ? dex : undefined;
-}
 
 /** Cohort size to query for `dex`, and the cap applied (null when none was). */
 export function cohortSizeFor(dex: string | undefined, topN: number): { topN: number; cappedTo: number | null } {
@@ -41,6 +35,8 @@ export async function fetchCohortAccounts(
   dex?: string,
   concurrency = 5,
 ): Promise<CohortAccount[]> {
+  // Checked once up front: per wallet the error would be skipped as a failed load.
+  if (dex && dex !== "all") await assertKnownDex(ctx.hl, dex);
   const out: CohortAccount[] = [];
   let i = 0;
   async function worker(): Promise<void> {

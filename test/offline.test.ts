@@ -2336,6 +2336,7 @@ function hip3Hl(extra: Record<string, unknown> = {}) {
     metaAndAssetCtxs: async () => [{ universe: [{ name: "BTC", szDecimals: 5, maxLeverage: 40 }] }, [ctxRow("60000")]],
     metaAndAssetCtxsForDex: async (dex: string) =>
       dex === "xyz" ? [{ universe: [{ name: "xyz:XYZ100", szDecimals: 4, maxLeverage: 20 }] }, [ctxRow("29800")]] : [{ universe: [] }, []],
+    perpDexs: async () => [null, { name: "xyz" }],
     ...extra,
   } as unknown as HyperliquidClient;
 }
@@ -2649,4 +2650,57 @@ test("a whale tool's dex argument is read case-insensitively, and 'main' means t
 
   assert.deepEqual((xyz.data as { coins: Array<{ coin: string }> }).coins.map((c) => c.coin), ["xyz:XYZ100"]);
   assert.deepEqual((main.data as { coins: Array<{ coin: string }> }).coins.map((c) => c.coin), ["BTC"]);
+});
+
+test("an unknown dex name is a clear error listing the known dexes, not an empty or internal-error result", async () => {
+  const { getAccount } = await import("../src/tools/free/getAccount.js");
+  const { getOpenOrders } = await import("../src/tools/free/getOpenOrders.js");
+  // The live API answers an unknown dex with null.
+  const hl = hip3Hl({ perpDexs: async () => [null, { name: "xyz" }], clearinghouseState: async () => null, openOrders: async () => null });
+  const ctx = { hl, snapshots: new InMemorySnapshotStore(), store: { cohort: { get: () => null } } } as unknown as ToolContext;
+  const unknownDex = (err: unknown) => err instanceof ToolError && err.code === "unknown_dex" && err.message.includes("xyz");
+
+  await assert.rejects(getAccount.run({ address: WHALE, dex: "xzy" }, ctx), unknownDex);
+  await assert.rejects(getOpenOrders.run({ address: WHALE, dex: "xzy" }, ctx), unknownDex);
+  await assert.rejects(whalePositions.run({ dex: "xzy", cohort: [WHALE] }, ctx), unknownDex);
+});
+
+test("a whale alert on a delisted HIP-3 dex does not stop the same cohort's main-dex alerts", async () => {
+  const alert = (id: string, coin: string): AlertRecord => ({
+    id, subject: "s", type: "whale_net_flip", params: { coin, cohort: [WHALE] },
+    enabled: true, cooldownMinutes: 5, lastFiredAt: null, lastState: { sign: -1 }, createdAt: 0,
+  });
+  const store = {
+    alerts: { listActive: () => [alert("gone", "gone:OLD"), alert("btc", "BTC")], updateState: () => undefined, recordFired: () => undefined },
+    signals: { dueForScoring: () => [], record: () => undefined },
+    snapshots: { record: () => undefined },
+    scores: { due: () => [] },
+  } as unknown as Warehouse;
+  const ctx = hip3WhaleCtx(); // "gone" is not among the live dexes; the cohort is now net long BTC
+  const signer = { sign: () => ({ signature: "sig" }) } as unknown as SignalSigner;
+
+  const fired = await new AlertEngine(ctx.hl, store, signer, { ...ctx, store } as unknown as ToolContext).tick(1_000_000);
+
+  assert.equal(fired, 1);
+});
+
+test("a market lookup on an unknown dex is an unknown_dex error, not a crash on null", async () => {
+  const { getMarkets } = await import("../src/tools/free/getMarkets.js");
+  const { resolveMarket } = await import("../src/hl/markets.js");
+  const hl = hip3Hl({ perpDexs: async () => [null, { name: "xyz" }], metaAndAssetCtxsForDex: async () => null });
+  const unknownDex = (err: unknown) => err instanceof ToolError && err.code === "unknown_dex";
+
+  await assert.rejects(getMarkets.run({ dex: "zzz" }, { hl } as unknown as ToolContext), unknownDex);
+  await assert.rejects(resolveMarket(hl, "foo:BAR"), unknownDex);
+});
+
+test("account tools read dex like the whale tools: case-insensitive, and 'main' is the main dex", async () => {
+  const { getAccount } = await import("../src/tools/free/getAccount.js");
+  const ctx = hip3WhaleCtx();
+
+  const xyz = await getAccount.run({ address: WHALE, dex: "XYZ" }, ctx);
+  const main = await getAccount.run({ address: WHALE, dex: "main" }, ctx);
+
+  assert.deepEqual((xyz.data as { positions: Array<{ coin: string }> }).positions.map((p) => p.coin), ["xyz:XYZ100"]);
+  assert.deepEqual((main.data as { positions: Array<{ coin: string }> }).positions.map((p) => p.coin), ["BTC"]);
 });
