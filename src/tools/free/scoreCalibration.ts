@@ -12,9 +12,10 @@ export const scoreCalibration: ToolDef = {
   title: "Smart-money score calibration",
   description:
     "Out-of-sample evidence for whether the hl_smart_money_score actually predicts anything: Spearman rank " +
-    "correlation between each wallet's score and the realized PnL it went on to earn over the forward window, " +
-    "plus mean forward PnL per score quartile. Verdicts: insufficient_data (not enough resolved observations yet), " +
-    "inverted (significantly NEGATIVE — higher-scored wallets did worse), no_evidence, weak_positive, positive. " +
+    "correlation between each wallet's score and the realized return it went on to earn over the forward window " +
+    "(PnL over account value), plus mean forward return per score quartile. Verdicts: insufficient_data (not " +
+    "enough resolved observations yet), inverted (significantly NEGATIVE — higher-scored wallets did worse), " +
+    "no_evidence, weak_positive, positive (both require p<0.05). " +
     "Only server-selected cohorts enter the sample, so a caller cannot steer this figure. " +
     "Read this before treating the score as a forecast.",
   inputSchema: {},

@@ -177,7 +177,8 @@ export function calibrate(observations: ScoredOutcome[]): CalibrationReport {
     const significant = p !== null && p < 0.05;
     if (significant && r > 0.2) verdict = "positive";
     else if (significant && r < -0.2) verdict = "inverted";
-    else if (r > 0.1) verdict = "weak_positive";
+    // Weak still has to be significant: an r of 0.13 at p 0.4 is noise.
+    else if (significant && r > 0.1) verdict = "weak_positive";
     else verdict = "no_evidence";
   }
 

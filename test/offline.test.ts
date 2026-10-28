@@ -1452,3 +1452,13 @@ test("calibration outcomes are returns on the sampled account, not raw USD PnL",
     { score: 90, forwardReturn: 0.01 },
   ]);
 });
+
+test("an insignificant small positive correlation is no evidence, not weak_positive", () => {
+  const observations = Array.from({ length: 40 }, (_, i) => ({ score: i, forwardReturn: (i + 7) % 40 }));
+
+  const report = calibrate(observations);
+
+  // r ≈ 0.13 with p ≈ 0.41: indistinguishable from noise.
+  assert.ok((report.pValue ?? 0) > 0.05);
+  assert.equal(report.verdict, "no_evidence");
+});
