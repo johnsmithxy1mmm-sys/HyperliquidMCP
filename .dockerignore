@@ -1,0 +1,16 @@
+# Keep secrets, local state and build output out of the build context: the
+# Dockerfile copies only what it names, but the whole context is sent to the
+# builder (and to Fly's remote builder).
+.env
+.env.*
+!.env.example
+data/
+*.db
+*.db-*
+.git/
+node_modules/
+dist/
+coverage/
+apify-actor/
+docs/
+test/

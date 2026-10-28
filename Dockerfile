@@ -2,7 +2,7 @@
 # Multi-stage: compile TS + native deps once in `build`, ship a slim runtime
 # with no compiler toolchain (node_modules, incl. prebuilt better-sqlite3,
 # are copied from the build stage — same base image, ABI-compatible).
-FROM node:20-slim AS build
+FROM node:22-slim AS build
 WORKDIR /app
 # Build toolchain for native better-sqlite3.
 RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
@@ -13,7 +13,7 @@ RUN npm ci --no-audit --no-fund
 COPY src ./src
 RUN npm run build && npm prune --omit=dev
 
-FROM node:20-slim AS runtime
+FROM node:22-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 COPY package.json ./
