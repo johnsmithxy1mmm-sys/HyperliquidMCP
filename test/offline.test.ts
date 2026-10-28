@@ -1582,3 +1582,22 @@ test("hl_cancel_execution stops a running plan", async () => {
 
   assert.equal((data as { status: string }).status, "cancelled");
 });
+
+test("Polymarket 'Up or Down' markets are direction bets, not price thresholds", () => {
+  assert.equal(parseThresholdMarket("Solana Up or Down - October 28"), null);
+});
+
+test("Polymarket parser skips a day-of-month next to a month name", () => {
+  assert.equal(parseThresholdMarket("Will XRP hit 3 by October 28?")?.thresholdUsd, 3);
+});
+
+test("Polymarket parser refuses a percentage move as a price", () => {
+  assert.equal(parseThresholdMarket("Will SOL rise 10% this week?"), null);
+});
+
+test("Polymarket 'exceed / fall below ... by <date>' resolves on a touch, not at expiry", () => {
+  assert.equal(parseThresholdMarket("Will Bitcoin exceed $150k by December 31?")?.mode, "touch");
+  assert.equal(parseThresholdMarket("Will Ethereum fall below $2,000 by December 31?")?.mode, "touch_below");
+  // "be above ... on <date>" is still a reading at the date.
+  assert.equal(parseThresholdMarket("Will Bitcoin be above $100k on December 31?")?.mode, "above");
+});

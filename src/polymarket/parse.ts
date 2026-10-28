@@ -41,7 +41,24 @@ const BELOW_WORDS = /\b(below|under|less than|≤|<=)\b/i;
  * these must be refused outright rather than scored.
  */
 const NON_PRICE_SUBJECTS =
-  /\b(dominance|market\s?cap|marketcap|supply|hashrate|hash\s?rate|difficulty|fees?|gas|volume|tvl|apy|apr|inflation|holders?|addresses|transactions|nodes?|staked?|percent|%)\b/i;
+  /\b(dominance|market\s?cap|marketcap|supply|hashrate|hash\s?rate|difficulty|fees?|gas|volume|tvl|apy|apr|inflation|holders?|addresses|transactions|nodes?|staked?|percent)\b|%/i;
+// `%` sits outside the \b group: a word boundary never follows it before a space,
+// so "SOL +10% this week" slipped through and was priced as a $10 threshold.
+
+/** "Up or Down" markets bet on direction from the open, not on a price threshold. */
+const UP_OR_DOWN = /\bup\s+or\s+down\b/i;
+
+/**
+ * Action verbs that resolve YES the moment the price gets there before the
+ * date ("exceed $X by Dec 31"), unlike a reading at the date ("be above $X on
+ * Dec 31"). Pricing them at expiry roughly halves the probability.
+ */
+const TOUCH_ABOVE_BY = /\b(exceed|go above|rise above|break above|climb above)\b.*\bby\b/i;
+const TOUCH_BELOW_BY = /\b(fall below|drop below|dip below|sink below|go below)\b.*\bby\b/i;
+
+/** A number right after a month name is a day of the month ("October 28"). */
+const MONTH_BEFORE =
+  /\b(jan(uary)?|feb(ruary)?|mar(ch)?|apr(il)?|may|june?|july?|aug(ust)?|sep(t(ember)?)?|oct(ober)?|nov(ember)?|dec(ember)?)\.?\s*$/i;
 
 /** Two thresholds in one question: a range or a compound bet, not a single event. */
 const COMPOUND = /\b(and|or)\b/i;
@@ -50,6 +67,7 @@ export function parseThresholdMarket(question: string): ParsedThreshold | null {
   if (!question) return null;
   const asset = ASSET_MAP.find((a) => a.re.test(question));
   if (!asset) return null;
+  if (UP_OR_DOWN.test(question)) return null;
 
   // A question about dominance/market cap/supply is not a price threshold, and
   // pricing it as one produces a confident, completely fictitious edge.
@@ -68,9 +86,9 @@ export function parseThresholdMarket(question: string): ParsedThreshold | null {
   if (COMPOUND.test(question) && countThresholdCandidates(question) > 1) return null;
 
   let mode: ThresholdMode;
-  if (TOUCH_BELOW_WORDS.test(question)) mode = "touch_below";
+  if (TOUCH_BELOW_WORDS.test(question) || TOUCH_BELOW_BY.test(question)) mode = "touch_below";
   else if (BELOW_WORDS.test(question)) mode = "below";
-  else if (TOUCH_WORDS.test(question)) mode = "touch";
+  else if (TOUCH_WORDS.test(question) || TOUCH_ABOVE_BY.test(question)) mode = "touch";
   else if (ABOVE_WORDS.test(question)) mode = "above";
   else mode = "above"; // default reading for "$X by date"
 
@@ -97,6 +115,12 @@ export function parseThresholdUsd(text: string): number | null {
     else if (suffix === "bn" || suffix === "billion") value *= 1_000_000_000;
     // A bare 1900-2100 integer is almost certainly a year, not a price.
     if (!hasDollar && !hasSuffix && Number.isInteger(value) && value >= 1900 && value <= 2100) continue;
+    // A bare number after a month name is a day ("October 28"); one touching
+    // a colon is a time ("12:00").
+    const digitsAt = (m.index ?? 0) + m[0].indexOf(m[2]);
+    const nextChar = text[digitsAt + m[2].length];
+    if (!hasDollar && !hasSuffix && MONTH_BEFORE.test(text.slice(0, digitsAt))) continue;
+    if (!hasDollar && (text[digitsAt - 1] === ":" || nextChar === ":")) continue;
     const score = (hasDollar ? 2 : 0) + (hasSuffix ? 1 : 0);
     if (!best || score > best.score || (score === best.score && value > best.value)) {
       best = { value, score };
