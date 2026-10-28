@@ -1363,3 +1363,21 @@ test("alert engine status shows when the last tick ran and why it failed", async
   assert.deepEqual(afterFailure, { lastTickAt: 1_000, lastTickError: "database is locked" });
   assert.deepEqual(engine.status(), { lastTickAt: 2_000, lastTickError: null });
 });
+
+test("a deploy with both key env vars empty does not revoke every bootstrap key", () => {
+  const db = getDb(join(tmpdir(), `hypersignal-test-${Date.now()}.db`));
+  const keyHash = `pro-bootstrap-${Date.now()}-${Math.random()}`;
+  upsertKey(db, keyHash, "pro", "pro-bootstrap");
+  const saved = { pro: process.env.HYPERSIGNAL_PRO_KEYS, free: process.env.HYPERSIGNAL_FREE_KEYS };
+  delete process.env.HYPERSIGNAL_PRO_KEYS;
+  delete process.env.HYPERSIGNAL_FREE_KEYS;
+
+  try {
+    new BillingService({ dbPath: join(tmpdir(), "unused.db"), x402: { enabled: false } } as unknown as Config);
+  } finally {
+    if (saved.pro !== undefined) process.env.HYPERSIGNAL_PRO_KEYS = saved.pro;
+    if (saved.free !== undefined) process.env.HYPERSIGNAL_FREE_KEYS = saved.free;
+  }
+
+  assert.equal(getKey(db, keyHash)?.disabled, 0, "a missing secret must not lock out every paying customer");
+});

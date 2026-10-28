@@ -68,6 +68,12 @@ export class BillingService {
     };
     provision(process.env.HYPERSIGNAL_PRO_KEYS, "pro");
     provision(process.env.HYPERSIGNAL_FREE_KEYS, "free");
+    // Both lists empty is far more likely a secret lost on redeploy than an
+    // operator revoking every customer at once; keep the keys and say so.
+    if (present.length === 0) {
+      log.warn("HYPERSIGNAL_PRO_KEYS and HYPERSIGNAL_FREE_KEYS are both empty; bootstrap keys left as they were");
+      return;
+    }
     const revoked = disableMissingBootstrapKeys(this.db, present);
     if (revoked > 0) log.info("revoked bootstrap keys removed from env", { revoked });
   }
