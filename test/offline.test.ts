@@ -2314,3 +2314,107 @@ test("placeOrder refuses a HIP-3 coin rather than trade the main dex asset at th
     (err: unknown) => err instanceof ToolError && err.code === "hip3_trading_unsupported",
   );
 });
+
+/** Stubs Telegram's Bot API; returns the sent messages and a restore function. */
+function stubTelegram(username = "hypersignal_bot") {
+  const sent: Array<{ chat_id: string; text: string }> = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: unknown, init?: { body?: unknown }) => {
+    const method = String(url).split("/").pop();
+    if (method === "getMe") return new Response(JSON.stringify({ ok: true, result: { username } }));
+    if (method === "sendMessage") sent.push(JSON.parse(String(init?.body)));
+    return new Response(JSON.stringify({ ok: true, result: {} }));
+  }) as typeof fetch;
+  return { sent, restore: () => { globalThis.fetch = realFetch; } };
+}
+
+test("a Telegram link code links the key's chat once and expires after 15 minutes", async () => {
+  const { TelegramStore } = await import("../src/telegram/store.js");
+  const store = new TelegramStore(new BetterSqlite3(":memory:"));
+
+  const code = store.createLinkCode("key-1", 0);
+  const expired = store.createLinkCode("key-2", 0);
+
+  assert.equal(store.redeem(code, "chat-9", 60_000), "key-1");
+  assert.equal(store.redeem(code, "chat-9", 60_000), undefined, "a code works once");
+  assert.equal(store.redeem(expired, "chat-8", 16 * 60_000), undefined);
+  assert.equal(store.chatFor("key-1"), "chat-9");
+});
+
+test("the bot links a chat on /start <code> and unlinks it on /stop", async () => {
+  const { TelegramStore } = await import("../src/telegram/store.js");
+  const { TelegramBot } = await import("../src/telegram/bot.js");
+  const store = new TelegramStore(new BetterSqlite3(":memory:"));
+  const bot = new TelegramBot("TEST-TOKEN", store);
+  const tg = stubTelegram();
+  const code = store.createLinkCode("key-1");
+  let linked: string | undefined;
+  try {
+    await bot.handleUpdate({ update_id: 1, message: { chat: { id: 42 }, text: `/start ${code}` } });
+    linked = store.chatFor("key-1");
+    await bot.handleUpdate({ update_id: 2, message: { chat: { id: 42 }, text: "/stop" } });
+  } finally {
+    tg.restore();
+  }
+
+  assert.equal(linked, "42");
+  assert.equal(store.chatFor("key-1"), undefined);
+  assert.equal(tg.sent.length, 2, "both commands are answered");
+});
+
+test("the bot sends at most 30 alert messages an hour to one chat", async () => {
+  const { TelegramStore } = await import("../src/telegram/store.js");
+  const { TelegramBot } = await import("../src/telegram/bot.js");
+  const store = new TelegramStore(new BetterSqlite3(":memory:"));
+  store.link("key-1", "42");
+  const bot = new TelegramBot("TEST-TOKEN", store);
+  const tg = stubTelegram();
+  try {
+    for (let i = 0; i < 31; i++) await bot.notify("key-1", `alert ${i}`);
+  } finally {
+    tg.restore();
+  }
+
+  assert.equal(tg.sent.length, 30);
+});
+
+test("a firing alert is handed to the notifier with its owner", async () => {
+  const alert: AlertRecord = {
+    id: "n", subject: "key-7", type: "price_move", params: { coin: "BTC", movePct: 0.01, windowMinutes: 60 },
+    enabled: true, cooldownMinutes: 60, lastFiredAt: null, lastState: null, createdAt: 0,
+  };
+  const store = {
+    alerts: { listActive: () => [alert], updateState: () => undefined, recordFired: () => undefined },
+    signals: { dueForScoring: () => [], record: () => "id" },
+    snapshots: { record: () => undefined, nearest: () => ({ value: { px: 59_000 }, at: 0 }) },
+    scores: { due: () => [] },
+  } as unknown as Warehouse;
+  const notified: string[] = [];
+  const signer = { sign: () => ({ signature: "sig" }) } as unknown as SignalSigner;
+  const engine = new AlertEngine(hip3Hl(), store, signer, { store } as unknown as ToolContext, (subject) => notified.push(subject));
+
+  await engine.tick(1_000_000);
+
+  assert.deepEqual(notified, ["key-7"]);
+});
+
+test("hl_link_telegram returns a one-time t.me link, or says Telegram is not configured", async () => {
+  const { linkTelegram } = await import("../src/tools/free/telegram.js");
+  const { TelegramStore } = await import("../src/telegram/store.js");
+  const { TelegramBot } = await import("../src/telegram/bot.js");
+  const bot = new TelegramBot("TEST-TOKEN", new TelegramStore(new BetterSqlite3(":memory:")));
+  const tg = stubTelegram("hypersignal_bot");
+  let link = "";
+  try {
+    const { data } = await linkTelegram.run({}, { subject: "key-1", telegram: bot } as unknown as ToolContext);
+    link = (data as { link: string }).link;
+  } finally {
+    tg.restore();
+  }
+
+  assert.match(link, /^https:\/\/t\.me\/hypersignal_bot\?start=[0-9a-f]{16}$/);
+  await assert.rejects(
+    linkTelegram.run({}, { subject: "key-1" } as unknown as ToolContext),
+    (err: unknown) => err instanceof ToolError && err.code === "telegram_not_configured",
+  );
+});

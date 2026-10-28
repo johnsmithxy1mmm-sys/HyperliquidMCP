@@ -64,6 +64,9 @@ export interface Config {
     pricePerCallUsdc: number;
   };
 
+  /** Telegram alert delivery; off unless TELEGRAM_BOT_TOKEN is set. */
+  telegram: { botToken: string | undefined; channelId: string | undefined; publicBaseUrl: string | undefined };
+
   /** Polymarket cross-market analytics. */
   polymarket: {
     gammaUrl: string;
@@ -155,6 +158,12 @@ export function loadConfig(): Config {
       asset: process.env.X402_ASSET ?? "USDC",
       facilitatorUrl: process.env.X402_FACILITATOR_URL?.trim() || undefined,
       pricePerCallUsdc: envNum("X402_PRICE_PER_CALL_USDC", 0.01),
+    },
+
+    telegram: {
+      botToken: process.env.TELEGRAM_BOT_TOKEN?.trim() || undefined,
+      channelId: process.env.TELEGRAM_CHANNEL_ID?.trim() || undefined,
+      publicBaseUrl: process.env.PUBLIC_BASE_URL?.trim().replace(/\/$/, "") || undefined,
     },
 
     polymarket: {
