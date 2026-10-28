@@ -51,6 +51,8 @@ export class HyperliquidClient {
     const res = await postJson<T>(this.config.infoBaseUrl, body, {
       timeoutMs: this.config.requestTimeoutMs,
       maxRetries: this.config.maxRetries,
+      // Hyperliquid weighs every HTTP request, retries included.
+      onRetry: () => this.limiter.acquire(weight),
     });
     // The per-item surcharge is only known once the response is in.
     const extra = itemsPerWeight && Array.isArray(res) ? Math.floor(res.length / itemsPerWeight) : 0;

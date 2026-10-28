@@ -2019,3 +2019,56 @@ test("hl_admin_stats is not exposed on the remote server, only locally", async (
   assert.equal(names("http").includes("hl_admin_stats"), false);
   assert.equal(names("stdio").includes("hl_admin_stats"), true);
 });
+
+test("hl_create_alert caps the active alerts one key may hold", async () => {
+  const mine = Array.from({ length: 20 }, (_, i) => ({ id: `a${i}`, subject: "key-1", type: "price_move" }));
+  const ctx = {
+    ...(tradingCtx(5) as object),
+    subject: "key-1",
+    store: {
+      alerts: {
+        listActive: () => [...mine, { id: "other", subject: "key-2", type: "price_move" }],
+        create: () => ({ id: "new", type: "price_move", params: { coin: "BTC" }, cooldownMinutes: 120 }),
+      },
+    },
+  } as unknown as ToolContext;
+
+  await assert.rejects(
+    createAlert.run({ type: "price_move", coin: "BTC", cooldownMinutes: 120 }, ctx),
+    (err: unknown) => err instanceof ToolError && err.code === "too_many_alerts",
+  );
+});
+
+test("hl_create_alert refuses a whale cohort over 100 addresses", () => {
+  const cohort = Array.from({ length: 101 }, (_, i) => `0x${String(i).padStart(40, "0")}`);
+
+  assert.equal(createAlert.inputSchema.cohort?.safeParse(cohort).success, false);
+});
+
+test("a retried Hyperliquid request is charged again for each attempt", async () => {
+  const charged: number[] = [];
+  const realAcquire = RateLimiter.prototype.acquire;
+  const realFetch = globalThis.fetch;
+  let calls = 0;
+  RateLimiter.prototype.acquire = async function (weight?: number) {
+    charged.push(weight ?? 1);
+  };
+  globalThis.fetch = (async () => {
+    calls++;
+    return calls === 1
+      ? new Response("busy", { status: 503 })
+      : new Response(JSON.stringify([{ universe: [] }, []]), { status: 200 });
+  }) as typeof fetch;
+  try {
+    const hl = new HyperliquidClient({
+      infoBaseUrl: "http://hl.test/info", requestTimeoutMs: 1000, maxRetries: 1, rateWeightPerMin: 1200,
+    } as unknown as Config);
+    await hl.metaAndAssetCtxs();
+  } finally {
+    RateLimiter.prototype.acquire = realAcquire;
+    globalThis.fetch = realFetch;
+  }
+
+  // Hyperliquid counts every HTTP request, retries included.
+  assert.deepEqual(charged, [20, 20]);
+});
