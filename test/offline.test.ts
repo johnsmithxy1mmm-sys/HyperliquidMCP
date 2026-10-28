@@ -45,6 +45,7 @@ import { InMemorySnapshotStore } from "../src/core/snapshots.js";
 import { AlertEngine } from "../src/alerts/engine.js";
 import type { Warehouse } from "../src/store/warehouse.js";
 import type { SignalSigner } from "../src/signals/signer.js";
+import { resolveTarget } from "../apify-actor/target.js";
 
 test("formatSize rounds to szDecimals", () => {
   assert.equal(formatSize(1.23456789, 3), "1.235");
@@ -1094,4 +1095,20 @@ test("alert engine resolves due score outcomes with no alerts and no due signals
   await engine.tick(5 * day);
 
   assert.equal(scores.counts().resolved, 1);
+});
+
+test("apify actor never sends the operator key to a caller-supplied URL", () => {
+  const env = { MCP_SERVER_URL: "https://operator.example/mcp", MCP_API_KEY: "hs_pro_operator" };
+
+  const target = resolveTarget({ mcpServerUrl: "https://evil.example/mcp" }, env);
+
+  assert.deepEqual(target, { url: "https://operator.example/mcp", apiKey: "hs_pro_operator" });
+});
+
+test("apify actor lets a caller with their own key pick their own server", () => {
+  const env = { MCP_SERVER_URL: "https://operator.example/mcp", MCP_API_KEY: "hs_pro_operator" };
+
+  const target = resolveTarget({ mcpServerUrl: "https://self-hosted.example/mcp", mcpApiKey: "hs_pro_caller" }, env);
+
+  assert.deepEqual(target, { url: "https://self-hosted.example/mcp", apiKey: "hs_pro_caller" });
 });
