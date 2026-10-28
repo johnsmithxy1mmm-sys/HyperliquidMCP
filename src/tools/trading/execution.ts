@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { ToolDef, ToolContext } from "../registry.js";
 import { ToolError } from "../../core/errors.js";
-import { resolveMarket } from "../../hl/markets.js";
+import { resolveMarket, dexOf } from "../../hl/markets.js";
 import { normalizeAccount } from "../../hl/account.js";
 import { assertAddress, round } from "../../core/format.js";
 import { planTwap, planMirror, type MirrorPositionInput } from "../../execution/plan.js";
@@ -49,6 +49,9 @@ export const twapOrder: ToolDef = {
   run: async (args, ctx) => {
     const { execution, trading } = requireExecution(ctx);
     const market = await resolveMarket(ctx.hl, String(args.coin));
+    if (dexOf(market.coin)) {
+      throw new ToolError("hip3_trading_unsupported", `Trading HIP-3 markets (${market.coin}) is not supported yet.`);
+    }
     const slices = args.slices as number;
     const children = planTwap({
       totalSize: args.totalSize as number,

@@ -13,6 +13,7 @@ export const getMarkets: ToolDef = {
     "List Hyperliquid perpetual markets with mark/oracle price, hourly + annualized funding, open interest, and 24h volume. " +
     "Use to discover valid coin symbols and scan the board. Supports name filter, sorting, and pagination.",
   inputSchema: {
+    dex: z.string().optional().describe("HIP-3 builder dex to list (e.g. 'xyz'); omit for the main dex."),
     filter: z.string().optional().describe("Case-insensitive substring match on coin symbol (e.g. 'BTC')."),
     sort: z.enum(SORTS).default("volume").describe("Sort field (desc for numeric, asc for name)."),
     includeDelisted: z.boolean().default(false).describe("Include delisted markets."),
@@ -34,7 +35,7 @@ export const getMarkets: ToolDef = {
     const offset = (args.offset as number) ?? 0;
     const limit = (args.limit as number) ?? 50;
 
-    let rows = await getMarketRows(ctx.hl);
+    let rows = await getMarketRows(ctx.hl, (args.dex as string | undefined) || undefined);
     if (!includeDelisted) rows = rows.filter((r) => !r.isDelisted);
     if (filter) rows = rows.filter((r) => r.coin.toLowerCase().includes(filter));
 

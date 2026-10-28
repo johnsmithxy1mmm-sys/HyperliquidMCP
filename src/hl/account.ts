@@ -59,3 +59,33 @@ export function normalizeAccount(state: ClearinghouseState): NormalizedAccount {
     positions,
   };
 }
+
+/**
+ * Perp account state on the main dex (no `dex`), one HIP-3 builder dex, or all
+ * of them ("all"): each dex keeps its own margin, so "all" sums the margin
+ * figures and concatenates positions (HIP-3 coins keep their "dex:" prefix).
+ */
+export async function accountStateFor(
+  hl: { clearinghouseState(user: string, dex?: string): Promise<ClearinghouseState>; perpDexs(): Promise<Array<{ name?: string } | null>> },
+  user: string,
+  dex?: string,
+): Promise<ClearinghouseState> {
+  if (dex !== "all") return hl.clearinghouseState(user, dex || undefined);
+  const builderDexs = (await hl.perpDexs()).flatMap((d) => (d?.name ? [d.name] : []));
+  const states = await Promise.all([hl.clearinghouseState(user), ...builderDexs.map((d) => hl.clearinghouseState(user, d))]);
+  const sum = (pick: (s: ClearinghouseState) => string) => String(states.reduce((a, s) => a + num(pick(s)), 0));
+  const margin = (key: "marginSummary" | "crossMarginSummary") => ({
+    accountValue: sum((s) => s[key].accountValue),
+    totalNtlPos: sum((s) => s[key].totalNtlPos),
+    totalRawUsd: sum((s) => s[key].totalRawUsd),
+    totalMarginUsed: sum((s) => s[key].totalMarginUsed),
+  });
+  return {
+    ...states[0],
+    marginSummary: margin("marginSummary"),
+    crossMarginSummary: margin("crossMarginSummary"),
+    crossMaintenanceMarginUsed: sum((s) => s.crossMaintenanceMarginUsed),
+    withdrawable: sum((s) => s.withdrawable),
+    assetPositions: states.flatMap((s) => s.assetPositions),
+  };
+}

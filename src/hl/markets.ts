@@ -51,8 +51,15 @@ export function buildRow(meta: AssetMeta, ctx: AssetCtx, index: number): MarketR
   };
 }
 
-export async function getMarketRows(hl: HyperliquidClient): Promise<MarketRow[]> {
-  const [meta, ctxs] = await hl.metaAndAssetCtxs();
+/** HIP-3 coins carry their builder dex as a prefix ("xyz:XYZ100"); main-dex coins have none. */
+export function dexOf(coin: string): string | undefined {
+  const i = coin.indexOf(":");
+  return i > 0 ? coin.slice(0, i).trim().toLowerCase() : undefined;
+}
+
+/** Market rows of the main perp dex, or of one HIP-3 builder dex. */
+export async function getMarketRows(hl: HyperliquidClient, dex?: string): Promise<MarketRow[]> {
+  const [meta, ctxs] = dex ? await hl.metaAndAssetCtxsForDex(dex) : await hl.metaAndAssetCtxs();
   const rows: MarketRow[] = [];
   for (let i = 0; i < meta.universe.length; i++) {
     const m = meta.universe[i];
@@ -65,7 +72,7 @@ export async function getMarketRows(hl: HyperliquidClient): Promise<MarketRow[]>
 
 /** Resolve a coin symbol (case-insensitive) to its market row or throw unknownCoin. */
 export async function resolveMarket(hl: HyperliquidClient, coin: string): Promise<MarketRow> {
-  const rows = await getMarketRows(hl);
+  const rows = await getMarketRows(hl, dexOf(coin));
   const wanted = coin.trim();
   const exact = rows.find((r) => r.coin === wanted);
   if (exact) return exact;

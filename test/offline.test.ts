@@ -2250,3 +2250,67 @@ test("the server exposes proof resources and briefing prompts to MCP clients", a
   const briefing = (await prompts.get("whale_briefing")!({ coin: "ETH" })).messages[0].content.text;
   assert.ok(briefing.includes("hl_whale_positions") && briefing.includes("ETH"));
 });
+
+/** Main dex with BTC; HIP-3 dex "xyz" with XYZ100 at index 0 (the same index as BTC on the main dex). */
+function hip3Hl(extra: Record<string, unknown> = {}) {
+  const ctxRow = (px: string) => ({ markPx: px, midPx: px, prevDayPx: px, funding: "0", oraclePx: px, openInterest: "10", dayNtlVlm: "0" });
+  return {
+    metaAndAssetCtxs: async () => [{ universe: [{ name: "BTC", szDecimals: 5, maxLeverage: 40 }] }, [ctxRow("60000")]],
+    metaAndAssetCtxsForDex: async (dex: string) =>
+      dex === "xyz" ? [{ universe: [{ name: "xyz:XYZ100", szDecimals: 4, maxLeverage: 20 }] }, [ctxRow("29800")]] : [{ universe: [] }, []],
+    ...extra,
+  } as unknown as HyperliquidClient;
+}
+
+test("resolveMarket finds a HIP-3 coin on its builder dex", async () => {
+  const { resolveMarket } = await import("../src/hl/markets.js");
+
+  const market = await resolveMarket(hip3Hl(), "XYZ:xyz100");
+
+  assert.equal(market.coin, "xyz:XYZ100");
+  assert.equal(market.markPx, 29800);
+});
+
+test("hl_get_account with dex 'all' shows positions on every perp dex", async () => {
+  const { getAccount } = await import("../src/tools/free/getAccount.js");
+  const xyzState = { ...walletWithBtc(1), assetPositions: walletWithBtc(1).assetPositions.map((p) => ({ ...p, position: { ...p.position, coin: "xyz:XYZ100" } })) };
+  const hl = hip3Hl({
+    perpDexs: async () => [null, { name: "xyz" }],
+    clearinghouseState: async (_user: string, dex?: string) => (dex === "xyz" ? xyzState : walletWithBtc(1)),
+  });
+
+  const { data } = await getAccount.run({ address: "0x1111111111111111111111111111111111111111", dex: "all" }, { hl } as unknown as ToolContext);
+
+  assert.deepEqual((data as { positions: Array<{ coin: string }> }).positions.map((p) => p.coin).sort(), ["BTC", "xyz:XYZ100"]);
+});
+
+test("an alert on a HIP-3 coin is evaluated against that dex's market", async () => {
+  const alert: AlertRecord = {
+    id: "x", subject: "s", type: "price_move", params: { coin: "xyz:XYZ100", movePct: 0.01, windowMinutes: 60 },
+    enabled: true, cooldownMinutes: 60, lastFiredAt: null, lastState: null, createdAt: 0,
+  };
+  const recorded: unknown[] = [];
+  const store = {
+    alerts: { listActive: () => [alert], updateState: () => undefined, recordFired: () => undefined },
+    signals: { dueForScoring: () => [], record: (s: unknown) => recorded.push(s) },
+    snapshots: { record: () => undefined, nearest: () => ({ value: { px: 29_000 }, at: 0 }) },
+    scores: { due: () => [] },
+  } as unknown as Warehouse;
+  const signer = { sign: () => ({ signature: "sig" }) } as unknown as SignalSigner;
+
+  const fired = await new AlertEngine(hip3Hl(), store, signer, { store } as unknown as ToolContext).tick(1_000_000);
+
+  assert.equal(fired, 1);
+});
+
+test("placeOrder refuses a HIP-3 coin rather than trade the main dex asset at the same index", async () => {
+  const config = {
+    tradingEnabled: false, agentPrivateKey: undefined, builder: { address: undefined, feeTenthsBps: 5 },
+    network: "testnet", maxOrderNotionalUsd: 10_000,
+  } as unknown as Config;
+
+  await assert.rejects(
+    new TradingService(config, hip3Hl()).placeOrder({ coin: "xyz:XYZ100", isBuy: true, sz: 0.01, reduceOnly: false, tif: "Ioc" }, { confirm: false, dryRun: true }),
+    (err: unknown) => err instanceof ToolError && err.code === "hip3_trading_unsupported",
+  );
+});

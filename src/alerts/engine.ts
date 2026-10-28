@@ -10,7 +10,7 @@ import type { HyperliquidClient } from "../core/hlClient.js";
 import type { Warehouse } from "../store/warehouse.js";
 import { scoreTolerangeMs, type ScoreSource } from "../store/signalStore.js";
 import type { SignalSigner } from "../signals/signer.js";
-import { getMarketRows } from "../hl/markets.js";
+import { getMarketRows, dexOf } from "../hl/markets.js";
 import { fetchCohortAccounts, aggregateByCoin } from "../hl/whales.js";
 import { resolveCohort } from "../hl/cohort.js";
 import { evaluateAlert, type EvalInputs } from "./evaluate.js";
@@ -82,6 +82,15 @@ export class AlertEngine {
       }
 
       const rows = await getMarketRows(this.hl);
+      // Alerts on HIP-3 coins ("xyz:XYZ100") need their builder dex's market rows too.
+      const alertDexs = new Set(alerts.flatMap((a) => (a.params.coin ? [dexOf(a.params.coin)] : [])).filter((d): d is string => !!d));
+      for (const dex of alertDexs) {
+        try {
+          rows.push(...(await getMarketRows(this.hl, dex)));
+        } catch (err) {
+          log.warn("alert dex markets unavailable", { dex, err: String(err) });
+        }
+      }
       const marketByCoin = new Map(rows.map((r) => [r.coin, r]));
 
       // Record price snapshots for coins under price_move alerts.

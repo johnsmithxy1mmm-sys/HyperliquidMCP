@@ -6,7 +6,7 @@
  */
 import type { Config } from "../config.js";
 import type { HyperliquidClient } from "../core/hlClient.js";
-import { resolveMarket } from "../hl/markets.js";
+import { resolveMarket, dexOf } from "../hl/markets.js";
 import { postJson } from "../core/http.js";
 import { ToolError, UpstreamError } from "../core/errors.js";
 import { isAddress } from "../core/format.js";
@@ -101,6 +101,21 @@ export class TradingService {
     return nonce;
   }
 
+  /**
+   * Resolve a coin for an order. HIP-3 coins resolve on their builder dex, but
+   * their exchange asset id is not the in-dex index used here: placing one would
+   * trade the main-dex asset that happens to share the index. Refuse them.
+   */
+  private async tradableMarket(coin: string) {
+    const market = await resolveMarket(this.hl, coin);
+    if (dexOf(market.coin)) {
+      throw new ToolError("hip3_trading_unsupported", `Trading HIP-3 markets (${market.coin}) is not supported yet.`, {
+        coin: market.coin,
+      });
+    }
+    return market;
+  }
+
   canSubmit(): { ok: boolean; reason?: string } {
     if (!this.config.tradingEnabled) return { ok: false, reason: "trading_disabled (set HL_ENABLE_TRADING=true)" };
     if (!this.config.agentPrivateKey) return { ok: false, reason: "no_agent_key (set HL_AGENT_PRIVATE_KEY)" };
@@ -108,7 +123,7 @@ export class TradingService {
   }
 
   async placeOrder(params: OrderParams, opts: ExecOptions): Promise<ExecResult> {
-    const market = await resolveMarket(this.hl, params.coin);
+    const market = await this.tradableMarket(params.coin);
     const isPerp = true;
 
     // Determine limit price. Market orders use IOC with a slippage-bounded price.
@@ -176,7 +191,7 @@ export class TradingService {
   }
 
   async cancelOrder(coin: string, oid: number, opts: ExecOptions): Promise<ExecResult> {
-    const market = await resolveMarket(this.hl, coin);
+    const market = await this.tradableMarket(coin);
     const action = { type: "cancel", cancels: [{ a: market.index, o: oid }] };
     return this.execute(action, null, opts);
   }
@@ -216,7 +231,7 @@ export class TradingService {
     const who = address ?? account;
     if (!who) throw new ToolError("no_address", "Provide `address`, or set HL_AGENT_PRIVATE_KEY to infer it.");
     const state = await this.hl.clearinghouseState(who);
-    const market = await resolveMarket(this.hl, coin);
+    const market = await this.tradableMarket(coin);
     const pos = state.assetPositions.find((p) => p.position.coin === market.coin);
     const szi = pos ? Number(pos.position.szi) : 0;
     if (!pos || szi === 0) {
