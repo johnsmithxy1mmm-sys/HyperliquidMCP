@@ -44,7 +44,6 @@ import { TtlLruCache } from "../src/core/cache.js";
 import { InMemorySnapshotStore } from "../src/core/snapshots.js";
 import { AlertEngine } from "../src/alerts/engine.js";
 import type { Warehouse } from "../src/store/warehouse.js";
-import type { SignalSigner } from "../src/signals/signer.js";
 import { resolveTarget } from "../apify-actor/target.js";
 import { createAlert } from "../src/tools/premium/alerts.js";
 import { registerTool, type ToolDef } from "../src/tools/registry.js";
@@ -1175,4 +1174,19 @@ test("a premium call that succeeds counts against the free key's monthly quota",
 
   assert.notEqual(result.isError, true);
   assert.equal(tool.usage(), 1);
+});
+
+test("price_move fires once per crossing and re-arms after the move fades", () => {
+  const base: AlertRecord = {
+    id: "a", subject: "s", type: "price_move", params: { coin: "SOL", movePct: 0.01, windowMinutes: 1440 },
+    enabled: true, cooldownMinutes: 5, lastFiredAt: null, lastState: null, createdAt: 0,
+  };
+
+  const cross = evaluateAlert(base, { now: 1, markPx: 102, priorPx: 100 });
+  // A 24h move that persists all day must not re-fire on every cooldown.
+  const persists = evaluateAlert({ ...base, lastState: cross.state }, { now: 2, markPx: 103, priorPx: 100 });
+  const fades = evaluateAlert({ ...base, lastState: persists.state }, { now: 3, markPx: 100.5, priorPx: 100 });
+  const recross = evaluateAlert({ ...base, lastState: fades.state }, { now: 4, markPx: 98, priorPx: 100 });
+
+  assert.deepEqual([cross.fired, persists.fired, fades.fired, recross.fired], [true, false, false, true]);
 });

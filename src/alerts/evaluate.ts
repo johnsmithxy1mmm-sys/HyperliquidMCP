@@ -63,15 +63,21 @@ function evalPriceMove(alert: AlertRecord, inp: EvalInputs): EvalResult {
   const coin = alert.params.coin ?? "?";
   if (inp.markPx === undefined || inp.priorPx === undefined || inp.priorPx <= 0) return { fired: false };
   const ret = (inp.markPx - inp.priorPx) / inp.priorPx;
-  if (Math.abs(ret) >= movePct) {
+  const over = Math.abs(ret) >= movePct;
+  const prevOver = (alert.lastState as { over?: boolean } | null)?.over === true;
+  const state = { over };
+  // Rising edge only: a move that persists for the whole window would
+  // otherwise re-fire on every cooldown and flood the track record.
+  if (over && !prevOver) {
     const direction: "long" | "short" = ret > 0 ? "long" : "short";
     return {
       fired: true,
       message: `${coin} moved ${(ret * 100).toFixed(2)}% over the window (≥ ${(movePct * 100).toFixed(1)}%).`,
+      state,
       signal: { type: "price_move", coin, direction, refPx: inp.markPx },
     };
   }
-  return { fired: false };
+  return { fired: false, state };
 }
 
 function evalWhaleFlip(alert: AlertRecord, inp: EvalInputs): EvalResult {
