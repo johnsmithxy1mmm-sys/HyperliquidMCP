@@ -17,7 +17,8 @@ import { log } from "../logger.js";
 
 export interface CohortResolution {
   addresses: string[];
-  source: "arg" | "auto" | "env" | "leaderboard";
+  /** "auto_stale": an auto cohort past its freshness window, served because nothing else was available. */
+  source: "arg" | "auto" | "auto_stale" | "env" | "leaderboard";
   /** Age of the auto cohort snapshot, when that's the source. */
   ageSeconds?: number;
   strategy?: string;
@@ -25,6 +26,8 @@ export interface CohortResolution {
 
 /** Auto cohorts older than this are considered stale and skipped. */
 const MAX_AUTO_AGE_SECONDS = 24 * 3600;
+/** A stale auto cohort is still served, flagged, up to this age when no other source exists. */
+const MAX_STALE_AUTO_AGE_SECONDS = 7 * 24 * 3600;
 
 interface LeaderboardRow {
   ethAddress?: string;
@@ -69,6 +72,17 @@ export async function resolveCohort(
     } catch (err) {
       log.warn("leaderboard fetch failed", { err: String(err) });
     }
+  }
+
+  // A refresher outage of a day used to stop every whale tool and the daily
+  // sampler. Positions of last week's top wallets beat no answer, if flagged.
+  if (auto && auto.addresses.length > 0 && auto.ageSeconds <= MAX_STALE_AUTO_AGE_SECONDS) {
+    return {
+      addresses: auto.addresses.slice(0, topN),
+      source: "auto_stale",
+      ageSeconds: auto.ageSeconds,
+      strategy: auto.strategy,
+    };
   }
 
   throw noCohort();

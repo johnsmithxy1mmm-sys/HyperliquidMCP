@@ -2109,3 +2109,21 @@ test("a WebSocket that stays connected but silent is dropped so it can reconnect
 
   assert.equal(closedByClient, 1);
 });
+
+test("a stale auto cohort is served, flagged, when there is no other source", async () => {
+  const { resolveCohort } = await import("../src/hl/cohort.js");
+  const ctx = {
+    config: { whaleAddresses: [], leaderboardUrl: undefined, requestTimeoutMs: 1000 },
+    store: {
+      cohort: {
+        get: () => ({ addresses: ["0x1111111111111111111111111111111111111111"], ageSeconds: 3 * 86_400, strategy: "top_pnl" }),
+      },
+    },
+  } as unknown as ToolContext;
+
+  // The leaderboard refresher failing for a day used to stop every whale tool and the sampler.
+  const cohort = await resolveCohort(ctx, undefined, 50);
+
+  assert.equal(cohort.source, "auto_stale");
+  assert.equal(cohort.addresses.length, 1);
+});
