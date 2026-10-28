@@ -62,6 +62,7 @@ import { twapOrder, cancelExecution } from "../src/tools/trading/execution.js";
 import { ExecutionRunner } from "../src/execution/runner.js";
 import { traderReport } from "../src/tools/premium/traderReport.js";
 import { hip3Analytics } from "../src/tools/premium/hip3Analytics.js";
+import { PolymarketClient } from "../src/polymarket/client.js";
 
 test("formatSize rounds to szDecimals", () => {
   assert.equal(formatSize(1.23456789, 3), "1.235");
@@ -1653,4 +1654,29 @@ test("hl_hip3_analytics lists the builder dexs it did not scan", async () => {
   const { data } = await hip3Analytics.run({}, ctx);
 
   assert.deepEqual((data as { dexsNotScanned: string[] }).dexsNotScanned, ["dex10", "dex11"]);
+});
+
+test("Polymarket markets are fetched by 24h volume across several pages, not the first 500 returned", async () => {
+  const urls: string[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: unknown) => {
+    urls.push(String(url));
+    const offset = Number(new URL(String(url)).searchParams.get("offset") ?? 0);
+    const page = offset < 1000 ? Array.from({ length: 500 }, (_, i) => ({
+      question: `Q${offset + i}`, slug: `s${offset + i}`, outcomes: '["Yes","No"]', outcomePrices: '["0.5","0.5"]',
+    })) : [];
+    return new Response(JSON.stringify(page), { status: 200 });
+  }) as typeof fetch;
+  let markets: unknown[] = [];
+  try {
+    const client = new PolymarketClient({
+      polymarket: { gammaUrl: "http://gamma.test" }, requestTimeoutMs: 1000,
+    } as unknown as Config);
+    markets = await client.activeMarkets();
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  assert.ok(urls.every((u) => u.includes("order=volume24hr") && u.includes("ascending=false")));
+  assert.equal(markets.length, 1000);
 });
