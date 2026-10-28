@@ -47,6 +47,10 @@ import type { Warehouse } from "../src/store/warehouse.js";
 import type { SignalSigner } from "../src/signals/signer.js";
 import { resolveTarget } from "../apify-actor/target.js";
 import { createAlert } from "../src/tools/premium/alerts.js";
+import { registerTool, type ToolDef } from "../src/tools/registry.js";
+import { BillingService } from "../src/billing/service.js";
+import { ToolError } from "../src/core/errors.js";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 test("formatSize rounds to szDecimals", () => {
   assert.equal(formatSize(1.23456789, 3), "1.235");
@@ -1132,4 +1136,43 @@ test("hl_create_alert rejects a price_move threshold below 1%", () => {
   assert.equal(movePct?.safeParse(0).success, false);
   assert.equal(movePct?.safeParse(0.009).success, false);
   assert.equal(movePct?.safeParse(0.01).success, true);
+});
+
+/** Registers `run` as a premium tool behind a fresh free key; returns the call and the key's usage. */
+function premiumCallOnFreeKey(name: string, run: ToolDef["run"]) {
+  const billing = new BillingService({
+    dbPath: join(tmpdir(), `hypersignal-test-${Date.now()}.db`),
+    x402: { enabled: false },
+  } as unknown as Config);
+  const fingerprint = `${name}-${Date.now()}-${Math.random()}`;
+  const { rawKey } = billing.issueFreeKey(fingerprint);
+  let handler: (args: Record<string, unknown>) => Promise<{ isError?: boolean }> = async () => ({});
+  const server = {
+    registerTool: (_name: string, _config: unknown, h: typeof handler) => {
+      handler = h;
+    },
+  } as unknown as McpServer;
+  const def: ToolDef = { name, tier: "premium", title: name, description: name, inputSchema: {}, annotations: {}, run };
+  registerTool(server, def, { mode: "http", authorize: billing.authorizerFor({ apiKey: rawKey }) } as unknown as ToolContext);
+  return { call: () => handler({}), usage: () => billing.freeKeyUsage(fingerprint) };
+}
+
+test("a premium call that fails does not use up the free key's monthly quota", async () => {
+  const tool = premiumCallOnFreeKey("hl_test_failing", async () => {
+    throw new ToolError("unknown_coin", "No such coin.");
+  });
+
+  const result = await tool.call();
+
+  assert.equal(result.isError, true);
+  assert.equal(tool.usage(), 0);
+});
+
+test("a premium call that succeeds counts against the free key's monthly quota", async () => {
+  const tool = premiumCallOnFreeKey("hl_test_ok", async () => ({ summary: "ok", data: {} }));
+
+  const result = await tool.call();
+
+  assert.notEqual(result.isError, true);
+  assert.equal(tool.usage(), 1);
 });

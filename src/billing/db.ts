@@ -119,6 +119,16 @@ export function incrementUsage(database: Database.Database, keyHash: string, per
   return tx();
 }
 
+/** Undo one incrementUsage (a premium call that then failed); never below zero. */
+export function decrementUsage(database: Database.Database, keyHash: string, period: string, tool: string): void {
+  database
+    .prepare(
+      `UPDATE usage_counters SET count = count - 1
+       WHERE key_hash = ? AND period = ? AND tool = ? AND count > 0`,
+    )
+    .run(keyHash, period, tool);
+}
+
 export function monthlyTotal(database: Database.Database, keyHash: string, period: string): number {
   const row = database
     .prepare(`SELECT COALESCE(SUM(count),0) AS total FROM usage_counters WHERE key_hash = ? AND period = ?`)
