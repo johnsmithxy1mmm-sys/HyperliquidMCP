@@ -35,6 +35,7 @@ import { cancelOrder } from "./trading/cancelOrder.js";
 import { closePosition } from "./trading/closePosition.js";
 import { approveBuilderFeeGuide } from "./trading/approveBuilderFeeGuide.js";
 import { twapOrder, copyWallet, executionStatus, cancelExecution } from "./trading/execution.js";
+import { linkTelegram, unlinkTelegram } from "./free/telegram.js";
 
 export const FREE_TOOLS: ToolDef[] = [
   requestFreeKey,
@@ -46,6 +47,8 @@ export const FREE_TOOLS: ToolDef[] = [
   getOpenOrders,
   signalPubkey,
   adminStats,
+  linkTelegram,
+  unlinkTelegram,
   scoreCalibration,
 ];
 

@@ -23,6 +23,9 @@ import { TRUST_PROXY_SETTING } from "./core/clientIp.js";
 import { adminStats } from "./tools/free/adminStats.js";
 import { ensureHouseAlerts } from "./alerts/house.js";
 import { buildPublicProof, renderProofHtml } from "./public/proof.js";
+import { TelegramBot } from "./telegram/bot.js";
+import { TelegramStore } from "./telegram/store.js";
+import { getDb } from "./billing/db.js";
 import { ToolError } from "./core/errors.js";
 
 function envFlag(name: string): boolean {
@@ -69,7 +72,16 @@ async function main(): Promise<void> {
 
   // Standing-alert engine: evaluates alerts server-side and builds the track record.
   const cohortCtx = { config, hl: core.hl, store: core.store } as unknown as ToolContext;
-  const engine = new AlertEngine(core.hl, core.store, core.signer, cohortCtx);
+  // Telegram delivery is optional: without a token the server behaves as before.
+  const telegram = config.telegram.botToken
+    ? new TelegramBot(config.telegram.botToken, new TelegramStore(getDb(config.dbPath)), {
+        channelId: config.telegram.channelId,
+        publicBaseUrl: config.telegram.publicBaseUrl,
+      })
+    : undefined;
+  telegram?.start();
+
+  const engine = new AlertEngine(core.hl, core.store, core.signer, cohortCtx, telegram ? (subject, message) => void telegram.notify(subject, message) : undefined);
   engine.start();
 
   // The server's own alerts keep the published track record growing without customers.
@@ -190,6 +202,7 @@ async function main(): Promise<void> {
 
     // Stateless: fresh server + transport per request.
     const server = buildServer(core, {
+      telegram,
       tiers: ["free", "premium"],
       mode: "http",
       subject,

@@ -16,6 +16,7 @@ import type { Warehouse } from "../store/warehouse.js";
 import type { SignalSigner } from "../signals/signer.js";
 import type { TradingService } from "../trading/exchange.js";
 import type { ExecutionRunner } from "../execution/runner.js";
+import type { TelegramBot } from "../telegram/bot.js";
 import { ToolError } from "../core/errors.js";
 import { randomBytes } from "node:crypto";
 import { log } from "../logger.js";
@@ -60,6 +61,8 @@ export interface ToolContext {
   clientIp?: string;
   /** Billing service, http mode only (self-serve key issuance). */
   billing?: BillingLike;
+  /** Telegram delivery, when TELEGRAM_BOT_TOKEN is set (http mode). */
+  telegram?: TelegramBot;
   /**
    * Premium billing gate. Free/trading tools ignore it; premium tools await it
    * first. Returns what it charged, if anything.

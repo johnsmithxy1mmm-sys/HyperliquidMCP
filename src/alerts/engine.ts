@@ -40,6 +40,8 @@ export class AlertEngine {
     private readonly signer: SignalSigner,
     /** Minimal ctx for cohort resolution (whale alerts). */
     private readonly ctxForCohort: ToolContext,
+    /** Push a fired alert to its owner (Telegram), if configured. */
+    private readonly notify?: (subject: string, message: string) => void,
   ) {}
 
   start(intervalMs = Number(process.env.ALERT_INTERVAL_SEC ?? 60) * 1000): void {
@@ -144,6 +146,7 @@ export class AlertEngine {
               origin: a.subject === HOUSE_SUBJECT ? "house" : "user",
             });
           }
+          this.notify?.(a.subject, res.message);
           this.store.alerts.recordFired(a.id, a.subject, now, res.message, {
             type: a.type,
             ...(res.signal ?? {}),
