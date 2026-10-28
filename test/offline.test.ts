@@ -64,6 +64,7 @@ import { traderReport } from "../src/tools/premium/traderReport.js";
 import { hip3Analytics } from "../src/tools/premium/hip3Analytics.js";
 import { PolymarketClient } from "../src/polymarket/client.js";
 import { vaultScreener } from "../src/tools/premium/vaultScreener.js";
+import { buildPaymentRequirements, verifyPayment } from "../src/billing/x402.js";
 
 test("formatSize rounds to szDecimals", () => {
   assert.equal(formatSize(1.23456789, 3), "1.235");
@@ -1728,4 +1729,94 @@ test("detectCoordination returns at most 50 pairs, strongest first", () => {
 
   assert.equal(pairs.length, 50);
   assert.ok(pairs.every((p, i) => i === 0 || pairs[i - 1].similarity >= p.similarity));
+});
+
+function x402Config(): Config {
+  return {
+    dbPath: join(tmpdir(), `hypersignal-test-${Date.now()}.db`),
+    x402: {
+      enabled: true, payTo: "0x000000000000000000000000000000000000beef", network: "base", asset: "USDC",
+      facilitatorUrl: "http://facilitator.test", pricePerCallUsdc: 0.01,
+    },
+  } as unknown as Config;
+}
+
+/** base64 X-PAYMENT for one EIP-3009 authorization; `reordered` serializes the same payment differently. */
+function x402Header(nonce: string, reordered = false): string {
+  const authorization = reordered
+    ? { nonce, validBefore: "9999999999", validAfter: "0", value: "10000", to: "0x000000000000000000000000000000000000beef", from: "0xPayer" }
+    : { from: "0xPayer", to: "0x000000000000000000000000000000000000beef", value: "10000", validAfter: "0", validBefore: "9999999999", nonce };
+  const payment = reordered
+    ? { payload: { authorization, signature: "0xsig" }, network: "base", scheme: "exact", x402Version: 1 }
+    : { x402Version: 1, scheme: "exact", network: "base", payload: { signature: "0xsig", authorization } };
+  return Buffer.from(JSON.stringify(payment)).toString("base64");
+}
+
+/** Facilitator that accepts every payment; counts settlements. Returns a restore function. */
+function stubFacilitator(counts: { settles: number }): () => void {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: unknown) => {
+    if (String(url).endsWith("/settle")) {
+      counts.settles++;
+      return new Response(JSON.stringify({ success: true, transaction: "0xtx" }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ isValid: true }), { status: 200 });
+  }) as typeof fetch;
+  return () => {
+    globalThis.fetch = realFetch;
+  };
+}
+
+test("x402 requirements carry the EIP-712 domain standard clients sign against", () => {
+  const extra = buildPaymentRequirements(x402Config(), "hl_whale_positions").accepts[0].extra;
+
+  // Base mainnet USDC's EIP-712 domain is ("USD Coin", "2").
+  assert.deepEqual({ name: extra.name, version: extra.version }, { name: "USD Coin", version: "2" });
+});
+
+test("x402 refuses the same authorization re-encoded as a different JSON payload", async () => {
+  const config = x402Config();
+  const requirements = buildPaymentRequirements(config, "hl_whale_positions");
+  const restore = stubFacilitator({ settles: 0 });
+  let second: { reason?: string } = {};
+  try {
+    await verifyPayment(config, getDb(config.dbPath), x402Header("0xnonce-replay"), requirements);
+    second = await verifyPayment(config, getDb(config.dbPath), x402Header("0xnonce-replay", true), requirements);
+  } finally {
+    restore();
+  }
+
+  assert.equal(second.reason, "payment_replayed");
+});
+
+test("x402 settles only after the tool succeeds, so a failed call costs the payer nothing", async () => {
+  const billing = new BillingService(x402Config());
+  const counts = { settles: 0 };
+  const restore = stubFacilitator(counts);
+  const header = x402Header("0xnonce-settle");
+  const call = async (run: ToolDef["run"]) => {
+    let handler: (args: Record<string, unknown>) => Promise<{ isError?: boolean }> = async () => ({});
+    const server = { registerTool: (_n: string, _c: unknown, h: typeof handler) => { handler = h; } } as unknown as McpServer;
+    const def: ToolDef = { name: "hl_test_x402", tier: "premium", title: "t", description: "d", inputSchema: {}, annotations: {}, run };
+    registerTool(server, def, { mode: "http", authorize: billing.authorizerFor({ xPayment: header }) } as unknown as ToolContext);
+    return handler({});
+  };
+  let failed: { isError?: boolean } = {};
+  let settlesAfterFailure = -1;
+  let succeeded: { isError?: boolean } = {};
+  try {
+    failed = await call(async () => {
+      throw new ToolError("unknown_coin", "No such coin.");
+    });
+    settlesAfterFailure = counts.settles;
+    // The same payment is still good for a call that delivers.
+    succeeded = await call(async () => ({ summary: "ok", data: {} }));
+  } finally {
+    restore();
+  }
+
+  assert.equal(failed.isError, true);
+  assert.equal(settlesAfterFailure, 0);
+  assert.notEqual(succeeded.isError, true);
+  assert.equal(counts.settles, 1);
 });

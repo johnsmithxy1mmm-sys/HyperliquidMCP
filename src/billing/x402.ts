@@ -12,6 +12,7 @@ import type Database from "better-sqlite3";
 import type { Config } from "../config.js";
 import { consumePaymentId, releasePaymentId } from "./db.js";
 import { log } from "../logger.js";
+import { PaymentRequiredError } from "../core/errors.js";
 
 /** Base mainnet USDC (6 decimals). Override via X402_ASSET_ADDRESS if needed. */
 const BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
@@ -48,21 +49,41 @@ export function buildPaymentRequirements(config: Config, toolName: string): Paym
         payTo: config.x402.payTo ?? "0x0000000000000000000000000000000000000000",
         maxTimeoutSeconds: 60,
         asset,
-        extra: { name: config.x402.asset, decimals: 6 },
+        // The EIP-712 domain of the token: standard x402 clients sign
+        // transferWithAuthorization against it, so a wrong or missing name or
+        // version makes every payment fail verification.
+        extra: { name: eip712Name(config.x402.network), version: process.env.X402_EIP712_VERSION ?? "2", decimals: 6 },
       },
     ],
   };
 }
 
+/** USDC's EIP-712 domain name: "USD Coin" on Base mainnet, "USDC" on Base Sepolia. */
+function eip712Name(network: string): string {
+  return process.env.X402_EIP712_NAME ?? (network === "base-sepolia" ? "USDC" : "USD Coin");
+}
+
+/**
+ * A verified, reserved payment that has not been settled yet. Settled only once
+ * the tool has delivered, so a call that fails costs the payer nothing.
+ */
+export interface X402Charge {
+  /** Settle on-chain. Throws PaymentRequiredError when the payment did not settle. */
+  settle(): Promise<void>;
+  /** Free the reservation after a failed call, unless settlement may already have happened. */
+  release(): void;
+}
+
 export interface VerifyResult {
   ok: boolean;
   reason?: string;
-  paymentId?: string;
+  charge?: X402Charge;
 }
 
 /**
  * Verify an X-PAYMENT header. Decodes the base64 payload, asks the facilitator
- * to verify+settle, and records the payment id to block replays.
+ * to verify it, and reserves the payment id to block replays. Settlement is
+ * left to the returned charge.
  */
 export async function verifyPayment(
   config: Config,
@@ -99,39 +120,56 @@ export async function verifyPayment(
     // again and then refused — taking money for a call we do not serve.
     const reservationId = deriveId(payload);
     if (!consumePaymentId(db, reservationId)) return { ok: false, reason: "payment_replayed" };
-
-    let settleBody: { success?: boolean; transaction?: string };
-    try {
-      const settleRes = await postWithTimeout(`${base}/settle`, body);
-      settleBody = (await settleRes.json().catch(() => ({}))) as { success?: boolean; transaction?: string };
-      if (!settleRes.ok || !settleBody.success) {
-        releasePaymentId(db, reservationId);
-        return { ok: false, reason: "settlement_failed" };
-      }
-    } catch (err) {
-      // Settlement outcome is unknown (timeout, network). Keep the reservation:
-      // re-running settle on the same payload could double-charge, which is
-      // worse than making the caller retry with a fresh payment.
-      log.warn("x402 settle error; reservation kept", { err: String(err) });
-      return { ok: false, reason: "settlement_unconfirmed" };
-    }
-
-    return { ok: true, paymentId: settleBody.transaction ?? reservationId };
+    return { ok: true, charge: reservedCharge(db, base, body, reservationId) };
   } catch (err) {
     log.warn("x402 verify error", { err: String(err) });
     return { ok: false, reason: "facilitator_unreachable" };
   }
 }
 
+function reservedCharge(db: Database.Database, base: string, body: string, reservationId: string): X402Charge {
+  let state: "reserved" | "settled" | "unknown" | "released" = "reserved";
+  const release = (): void => {
+    if (state !== "reserved") return;
+    releasePaymentId(db, reservationId);
+    state = "released";
+  };
+  const settle = async (): Promise<void> => {
+    let settleRes: Response;
+    try {
+      settleRes = await postWithTimeout(`${base}/settle`, body);
+    } catch (err) {
+      // Outcome unknown (timeout, network). Keep the reservation: re-running
+      // settle on the same payload could double-charge, which is worse than
+      // making the caller retry with a fresh payment.
+      state = "unknown";
+      log.warn("x402 settle error; reservation kept", { err: String(err) });
+      throw new PaymentRequiredError("Payment settlement could not be confirmed; retry with a new payment.", {
+        reason: "settlement_unconfirmed",
+      });
+    }
+    const settleBody = (await settleRes.json().catch(() => ({}))) as { success?: boolean; transaction?: string };
+    if (!settleRes.ok || !settleBody.success) {
+      release();
+      throw new PaymentRequiredError("Payment did not settle.", { reason: "settlement_failed" });
+    }
+    state = "settled";
+    log.info("x402 payment settled", { transaction: settleBody.transaction });
+  };
+  return { settle, release };
+}
+
 /**
- * Stable id for a payment payload.
- *
- * Must hash the WHOLE payload: truncating the JSON to a fixed prefix collides
- * whenever two payments differ only in fields that serialize late (nonce,
- * signature), and a collision here rejects a genuine payment as a replay after
- * the caller has already paid.
+ * Replay key for a payment: the EIP-3009 authorization's (from, nonce), which
+ * the token contract itself treats as single-use. Hashing the serialized JSON
+ * let one payment be re-encoded (key order, extra fields) into many distinct
+ * ids, each passing /verify before the first settle landed.
  */
 function deriveId(payload: Record<string, unknown>): string {
+  const auth = (payload.payload as { authorization?: { from?: unknown; nonce?: unknown } } | undefined)?.authorization;
+  if (typeof auth?.from === "string" && typeof auth?.nonce === "string") {
+    return `eip3009:${auth.from.toLowerCase()}:${auth.nonce.toLowerCase()}`;
+  }
   return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
 }
 

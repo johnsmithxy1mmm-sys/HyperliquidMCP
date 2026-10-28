@@ -141,18 +141,20 @@ export class BillingService {
   }
 
   /**
-   * Build a per-request authorize() closure. A key-metered call returns a
-   * refund that undoes its charge if the tool then fails; an x402 payment is
-   * already settled on-chain, so it returns none.
+   * Build a per-request authorize() closure. It returns what it charged: a key's
+   * usage is counted now and refunded if the tool fails; an x402 payment is
+   * reserved now and settled only once the tool has delivered.
    */
-  authorizerFor(auth: RequestAuth): (toolName: string) => Promise<(() => void) | undefined> {
+  authorizerFor(
+    auth: RequestAuth,
+  ): (toolName: string) => Promise<{ refund: () => void; settle?: () => Promise<void> } | undefined> {
     return async (toolName: string) => {
       const keyRow = auth.apiKey ? getKey(this.db, this.hash(auth.apiKey)) : undefined;
       const tier = tierFor(keyRow && !keyRow.disabled ? keyRow.tier : "anonymous");
       const period = this.period();
       const charge = (keyHash: string) => {
         incrementUsage(this.db, keyHash, period, toolName);
-        return () => decrementUsage(this.db, keyHash, period, toolName);
+        return { refund: () => decrementUsage(this.db, keyHash, period, toolName) };
       };
 
       // Pro: unlimited (still counted for analytics).
@@ -172,9 +174,10 @@ export class BillingService {
       if (this.x402Ready) {
         const requirements = buildPaymentRequirements(this.config, toolName);
         const result = await verifyPayment(this.config, this.db, auth.xPayment, requirements);
-        if (result.ok) {
-          log.info("x402 payment accepted", { toolName, paymentId: result.paymentId });
-          return undefined;
+        if (result.ok && result.charge) {
+          log.info("x402 payment verified and reserved", { toolName });
+          const { charge: payment } = result;
+          return { refund: () => payment.release(), settle: () => payment.settle() };
         }
         throw new PaymentRequiredError(
           `Payment required for premium tool "${toolName}". ` +
