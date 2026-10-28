@@ -2187,3 +2187,38 @@ test("ensureHouseAlerts keeps funding alerts on the top 10 coins by open interes
   assert.deepEqual(funding, [...coins.slice(0, 9), "ADA"].sort());
   assert.deepEqual(flips, ["BTC", "ETH"]);
 });
+
+test("the public proof publishes house signals, calibration and the signing key", async () => {
+  const { buildPublicProof } = await import("../src/public/proof.js");
+  const origins: Array<string | undefined> = [];
+  const store = {
+    signals: {
+      trackRecord: (_type?: string, origin?: string) => {
+        origins.push(origin);
+        return [{ type: "funding_apr", total: 4, scored: 3, wins: 2, hitRatePct: 66.67, avgReturnPct: 0.4, medianReturnPct: 0.3, excludedStale: 0 }];
+      },
+    },
+    scores: { outcomes: () => [], counts: () => ({ total: 10, resolved: 0, pending: 10 }), abandoned: () => 0 },
+  } as unknown as Warehouse;
+  const signer = { publicKey: () => "MCowBQYDK2VwAyEA", ephemeral: false } as unknown as SignalSigner;
+
+  const proof = buildPublicProof(store, signer, "1.7.0", 5_000);
+
+  assert.deepEqual(origins, ["house"]);
+  assert.equal(proof.houseSignals[0].hitRatePct, 66.67);
+  assert.equal(proof.calibration.verdict, "insufficient_data");
+  assert.equal(proof.signing.publicKey, "MCowBQYDK2VwAyEA");
+});
+
+test("the public track record page escapes what it renders", async () => {
+  const { renderProofHtml } = await import("../src/public/proof.js");
+  const html = renderProofHtml({
+    server: "hypersignal-mcp", version: "1.7.0", generatedAt: 0,
+    signing: { alg: "ed25519", publicKey: "key<script>", persistent: true },
+    calibration: { n: 0, spearman: null, pValue: null, quartiles: [], verdict: "insufficient_data", observations: { total: 1, resolved: 0, pending: 1, abandoned: 0 } },
+    houseSignals: [{ type: "<img onerror=x>", total: 1, scored: 0, wins: 0, hitRatePct: 0, avgReturnPct: 0, medianReturnPct: 0, excludedStale: 0 }],
+  });
+
+  assert.ok(!html.includes("<script>") && !html.includes("<img"), "every value is HTML-escaped");
+  assert.ok(html.includes("insufficient_data"));
+});
