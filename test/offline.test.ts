@@ -2952,3 +2952,44 @@ test("the pricing URL points at a heading the README really has, and no doc stil
     assert.ok(!/\$19\b/.test(read(file)), `${file} still quotes the old $19 Pro price`);
   }
 });
+
+test("x402 advertises the token of the network it is on, not always the mainnet one", () => {
+  const on = (network: string) =>
+    buildPaymentRequirements({ x402: { ...x402Config().x402, network } } as unknown as Config, "hl_test").accepts[0].asset;
+
+  assert.equal(on("base"), "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913");
+  assert.equal(on("base-sepolia"), "0x036CbD53842c5426634e7929541eC2318f3dCF7e");
+});
+
+test("the test client signs an EIP-3009 payment the exact scheme accepts, bound to the right chain and token", async () => {
+  const { buildXPayment } = await import("../scripts/x402-test-payment.js");
+  const { verifyTypedData } = await import("viem");
+  const { privateKeyToAccount } = await import("viem/accounts");
+  const account = privateKeyToAccount("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"); // Hardhat #0, test-only
+  const requirement = {
+    network: "base-sepolia", maxAmountRequired: "10000", payTo: "0x000000000000000000000000000000000000beef",
+    asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", maxTimeoutSeconds: 60, extra: { name: "USDC", version: "2" },
+  };
+  const now = 1_800_000_000_000;
+
+  const header = await buildXPayment(requirement, account, now, `0x${"11".repeat(32)}`);
+
+  const payment = JSON.parse(Buffer.from(header, "base64").toString("utf8"));
+  const a = payment.payload.authorization;
+  assert.deepEqual([payment.x402Version, payment.scheme, payment.network], [1, "exact", "base-sepolia"]);
+  assert.deepEqual([a.from, a.to, a.value, a.validAfter, a.validBefore], [account.address, requirement.payTo, "10000", "0", "1800000060"]);
+  const signedByPayer = await verifyTypedData({
+    address: account.address,
+    domain: { name: "USDC", version: "2", chainId: 84532, verifyingContract: requirement.asset as `0x${string}` },
+    types: {
+      TransferWithAuthorization: [
+        { name: "from", type: "address" }, { name: "to", type: "address" }, { name: "value", type: "uint256" },
+        { name: "validAfter", type: "uint256" }, { name: "validBefore", type: "uint256" }, { name: "nonce", type: "bytes32" },
+      ],
+    },
+    primaryType: "TransferWithAuthorization",
+    message: { from: a.from, to: a.to, value: BigInt(a.value), validAfter: BigInt(a.validAfter), validBefore: BigInt(a.validBefore), nonce: a.nonce },
+    signature: payment.payload.signature,
+  });
+  assert.equal(signedByPayer, true);
+});

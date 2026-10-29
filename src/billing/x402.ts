@@ -16,6 +16,8 @@ import { PaymentRequiredError } from "../core/errors.js";
 
 /** Base mainnet USDC (6 decimals). Override via X402_ASSET_ADDRESS if needed. */
 const BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+/** Circle's USDC on Base Sepolia: the token for testing the whole payment flow. */
+const BASE_SEPOLIA_USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
 
 export interface PaymentRequirements {
   x402Version: number;
@@ -35,7 +37,7 @@ export interface PaymentRequirements {
 
 export function buildPaymentRequirements(config: Config, toolName: string): PaymentRequirements {
   const priceAtomic = Math.max(0, Math.round(config.x402.pricePerCallUsdc * 1_000_000)).toString();
-  const asset = process.env.X402_ASSET_ADDRESS ?? BASE_USDC;
+  const asset = process.env.X402_ASSET_ADDRESS ?? (config.x402.network === "base-sepolia" ? BASE_SEPOLIA_USDC : BASE_USDC);
   return {
     x402Version: 1,
     accepts: [
