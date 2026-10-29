@@ -14,6 +14,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { loadConfig } from "./config.js";
 import { Core, buildServer, SERVER_NAME, SERVER_VERSION } from "./server-core.js";
 import { BillingService } from "./billing/service.js";
+import { PRICING_URL } from "./billing/tiers.js";
 import { AlertEngine } from "./alerts/engine.js";
 import { CohortRefresher } from "./hl/cohortRefresh.js";
 import { ScoreSampler } from "./smartmoney/scoreSampler.js";
@@ -198,6 +199,7 @@ async function main(): Promise<void> {
       description: "Monetized MCP server for Hyperliquid analytics & signals.",
       endpoints: { health: "GET /healthz", mcp: `POST ${config.httpPath}`, trackRecord: "GET /track-record" },
       hint: "Connect an MCP client to the /mcp endpoint (Streamable HTTP). Free tools need no key; premium tools require X-API-Key or x402.",
+      pricing: PRICING_URL,
     });
   });
 

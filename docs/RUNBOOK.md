@@ -301,9 +301,9 @@ record (`hl_signal_track_record` покажет 1 сигнал спустя 24ч
 
 ## ЭТАП 7. Приём денег (30–60 мин)
 
-**7.1** 🌐 Stripe Payment Link для Pro ($19/мес):
+**7.1** 🌐 Stripe Payment Link для Pro ($29/мес; Stripe может быть недоступен из Казахстана, проверьте; план проекта: USDC через x402):
 1. `dashboard.stripe.com` → Products → Add product: «HyperSignal Pro»,
-   $19/month, recurring;
+   $29/month, recurring;
 2. Payment Links → New → выберите продукт → Create;
 3. Получите ссылку вида `buy.stripe.com/...` — это ваша страница оплаты.
 

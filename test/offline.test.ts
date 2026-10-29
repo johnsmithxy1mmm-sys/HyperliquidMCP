@@ -2907,3 +2907,48 @@ test("calibration uses only snapshots whose equity counts every dex the wallet t
   assert.deepEqual(store.outcomes().map((o) => o.score), [2]);
   assert.deepEqual(store.counts(), { total: 1, resolved: 1, pending: 0 }, "counts match what calibration uses");
 });
+
+test("Pro costs $29 a month and its description says so", async () => {
+  const { TIERS } = await import("../src/billing/tiers.js");
+
+  assert.equal(TIERS.pro.priceUsdMonth, 29);
+  assert.match(TIERS.pro.description, /\$29/);
+});
+
+test("a free key out of calls is told what Pro costs and where to get it", async () => {
+  const { TIERS, PRICING_URL } = await import("../src/billing/tiers.js");
+  const billing = new BillingService({
+    dbPath: join(tmpdir(), `hypersignal-test-${Date.now()}-quota.db`),
+    x402: { enabled: false },
+  } as unknown as Config);
+  const { rawKey } = billing.issueFreeKey("quota-fingerprint");
+  const authorize = billing.authorizerFor({ apiKey: rawKey });
+  for (let i = 0; i < (TIERS.free.monthlyPremiumCalls as number); i++) await authorize("hl_test_quota");
+
+  await assert.rejects(
+    authorize("hl_test_quota"),
+    (err: unknown) => err instanceof ToolError && err.message.includes("$29") && err.message.includes(PRICING_URL),
+  );
+});
+
+test("a premium call with x402 on but no payment says how to pay, and what Pro costs", async () => {
+  const { PRICING_URL } = await import("../src/billing/tiers.js");
+  const billing = new BillingService(x402Config());
+
+  await assert.rejects(
+    billing.authorizerFor({})("hl_test_x402_gate"),
+    (err: unknown) => err instanceof ToolError && err.message.includes("$29") && err.message.includes(PRICING_URL),
+  );
+});
+
+test("the pricing URL points at a heading the README really has, and no doc still quotes the old Pro price", async () => {
+  const { PRICING_URL } = await import("../src/billing/tiers.js");
+  const { readFileSync } = await import("node:fs");
+  const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
+  const readme = read("README.md");
+
+  assert.ok(PRICING_URL.endsWith("#pricing") && /^## Pricing$/m.test(readme), "PRICING_URL needs a '## Pricing' heading");
+  for (const file of ["README.md", "docs/LAUNCH.md", "docs/RUNBOOK.md", "PROJECT_BRIEF.md"]) {
+    assert.ok(!/\$19\b/.test(read(file)), `${file} still quotes the old $19 Pro price`);
+  }
+});

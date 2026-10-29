@@ -2,7 +2,7 @@ import { z } from "zod";
 import { createHash } from "node:crypto";
 import type { ToolDef } from "../registry.js";
 import { ToolError } from "../../core/errors.js";
-import { TIERS } from "../../billing/tiers.js";
+import { TIERS, PRICING_URL } from "../../billing/tiers.js";
 import { ipBucket } from "../../core/clientIp.js";
 
 /**
@@ -79,7 +79,7 @@ export const requestFreeKey: ToolDef = {
         usedThisMonth,
         reissued: issued.reissued,
         header: `X-API-Key: ${issued.rawKey}`,
-        upgrade: `Unlimited premium: $${TIERS.pro.priceUsdMonth}/month (Pro), or pay-per-call via x402.`,
+        upgrade: `Unlimited premium: $${TIERS.pro.priceUsdMonth}/month (Pro), or pay-per-call via x402. How to pay: ${PRICING_URL}`,
       },
     };
   },
