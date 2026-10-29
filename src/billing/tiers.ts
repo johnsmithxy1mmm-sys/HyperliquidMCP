@@ -10,6 +10,9 @@ export const PRICING_URL = "https://github.com/johnsmithxy1mmm-sys/HyperliquidMC
 
 const PRO_PRICE_USD_MONTH = 29;
 
+/** One Pro purchase buys this many days, added to the key's current end. */
+export const PRO_TERM_DAYS = 30;
+
 export interface TierConfig {
   name: TierName;
   /** Monthly premium-call allowance; null = unlimited. */

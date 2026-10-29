@@ -46,6 +46,7 @@ that attaches a builder code to orders.
 | `hl_poll_alerts` | premium | Retrieve fired alert events since your last poll (at-least-once), each with a signed signal payload. |
 | `hl_signal_track_record` | premium | Transparent, **verifiable performance** of emitted signals: hit-rate and avg/median direction-adjusted forward return per signal type. |
 | `hl_request_free_key` | free | **Self-serve API key** — one call, no signup, grants 100 premium calls/month. Send it as `X-API-Key`. This is the intended first call for any new agent: premium tools point at it by name when they need a key. |
+| `hl_buy_pro` | paid ($29, x402) | **Buy 30 days of Pro** over x402 (USDC on Base): a new key, or the key in `X-API-Key` renewed (a free key is upgraded in place). Remote server only. |
 | `hl_signal_pubkey` | free | Ed25519 public key to independently **verify** any signal's authenticity + timestamp. |
 | `hl_admin_stats` | free (own gate) | **Operator only** — requires `adminSecret` matching `HYPERSIGNAL_ADMIN_SECRET`. Per-key usage this billing period, top tools, active alerts, signal track record, x402 payment counts. |
 | `hl_smart_money_score` | premium | Rank a cohort by a **smart-money screening score** (risk-adjusted perf + winrate + reward/risk + size + activity) with behavioral **labels** (whale, sharp, scalper, market_maker_like, high_conviction, …). A descriptive screener over past results — see `hl_score_calibration` before treating it as a forecast. |
@@ -150,7 +151,7 @@ Point an MCP HTTP client at `https://your-host/mcp` and send `X-API-Key: <key>` 
 |---|---|---|
 | anonymous (no key) | free tools only | — |
 | free key | 100 premium calls/month | $0 |
-| pro key | unlimited premium calls | $29/month |
+| pro key | unlimited premium calls | $29 per 30 days |
 | x402 pay-per-call | per premium call | $0.01 USDC on Base |
 
 **How to get each**
@@ -159,14 +160,22 @@ Point an MCP HTTP client at `https://your-host/mcp` and send `X-API-Key: <key>` 
   requirements (0.01 USDC on Base, exact scheme); an x402-capable client signs the payment, retries with
   the `X-PAYMENT` header, and the call runs. The payment is settled only after the tool has delivered,
   so a failed call costs nothing.
-- **Pro:** keys are issued by the operator for now. Open a
-  [GitHub issue](https://github.com/johnsmithxy1mmm-sys/HyperliquidMCP/issues/new?title=Pro+key+request)
-  titled "Pro key request" and say how to reach you (for example a Telegram handle). The operator
-  replies there with payment details and sends the key privately. Never post a key in an issue.
+- **Pro:** call `hl_buy_pro`. It answers with x402 payment requirements ($29 in USDC on Base); an
+  x402-capable client pays and retries with the `X-PAYMENT` header, and the answer carries your Pro key,
+  valid for 30 days (shown once: keep it). Call it again with your key in `X-API-Key` to add 30 days
+  to its end; a free key is upgraded in place and keeps its alerts. The key is activated before the
+  payment is settled and a renewal only after, so a payment that fails costs nothing. Payments are final,
+  there are no automatic refunds: if something went wrong, open an
+  [issue](https://github.com/johnsmithxy1mmm-sys/HyperliquidMCP/issues/new?title=Pro+payment+problem)
+  with the time of the payment. Without an x402 client, open an issue titled "Pro key request" instead
+  and say how to reach you; never post a key in an issue.
+  When a Pro key runs out it works like no key (free tools, x402 per call) and the error says how to
+  renew; its alerts keep running for now.
 
 **For operators**
 - **API keys:** provision via `HYPERSIGNAL_PRO_KEYS` / `HYPERSIGNAL_FREE_KEYS` (comma-separated raw
-  keys, hashed before storage in SQLite). Usage counters are per key, per month. A key removed from
+  keys, hashed before storage in SQLite; they never expire). Bought keys live in the same table with an
+  end date, and every purchase is recorded in `pro_purchases`. Usage counters are per key, per month. A key removed from
   these lists is revoked on the next start, as long as at least one key stays listed: two empty
   lists read as a lost secret and revoke nothing.
 - **x402:** when a request has no key/quota and `X402_ENABLED=true`, premium tools return an x402

@@ -35,8 +35,12 @@ export interface PaymentRequirements {
   }>;
 }
 
-export function buildPaymentRequirements(config: Config, toolName: string): PaymentRequirements {
-  const priceAtomic = Math.max(0, Math.round(config.x402.pricePerCallUsdc * 1_000_000)).toString();
+export function buildPaymentRequirements(
+  config: Config,
+  toolName: string,
+  priceUsdc = config.x402.pricePerCallUsdc,
+): PaymentRequirements {
+  const priceAtomic = Math.max(0, Math.round(priceUsdc * 1_000_000)).toString();
   const asset = process.env.X402_ASSET_ADDRESS ?? (config.x402.network === "base-sepolia" ? BASE_SEPOLIA_USDC : BASE_USDC);
   return {
     x402Version: 1,

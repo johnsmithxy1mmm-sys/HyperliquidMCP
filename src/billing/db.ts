@@ -14,6 +14,8 @@ export interface KeyRow {
   label: string | null;
   createdAt: number;
   disabled: number;
+  /** End of a bought key's term (ms). null = never expires (operator-issued and free keys). */
+  expiresAt: number | null;
 }
 
 let db: Database.Database | undefined;
@@ -55,8 +57,74 @@ export function getDb(path: string): Database.Database {
       grants      INTEGER NOT NULL DEFAULT 1
     );
   `);
+  migrateApiKeys(db);
   log.info("billing db ready", { path });
   return db;
+}
+
+/**
+ * Columns and tables added after the first release, applied to any existing
+ * database. Idempotent: it runs on every start.
+ */
+export function migrateApiKeys(database: Database.Database): void {
+  const cols = database.prepare(`PRAGMA table_info(api_keys)`).all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === "expires_at")) {
+    database.exec(`ALTER TABLE api_keys ADD COLUMN expires_at INTEGER`);
+  }
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS pro_purchases (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      key_hash      TEXT NOT NULL,
+      purchased_at  INTEGER NOT NULL,
+      days          INTEGER NOT NULL,
+      amount_atomic INTEGER NOT NULL,   -- USDC, 6 decimals
+      renewed       INTEGER NOT NULL
+    );
+  `);
+}
+
+/** Insert a bought Pro key that runs until `expiresAt`. */
+export function grantProKey(database: Database.Database, keyHash: string, expiresAt: number): void {
+  database
+    .prepare(
+      `INSERT INTO api_keys (key_hash, tier, label, created_at, disabled, expires_at) VALUES (?, 'pro', 'pro-x402', ?, 0, ?)`,
+    )
+    .run(keyHash, Date.now(), expiresAt);
+}
+
+/**
+ * Add `termMs` to a key's end (counted from now when it has run out or has no
+ * end yet) and make it Pro. Computed in SQL so two renewals that race both
+ * count. A free key leaves its self-serve grant, so asking for a new free key
+ * later cannot touch the bought one. Returns the new end.
+ */
+export function extendProKey(database: Database.Database, keyHash: string, termMs: number, now = Date.now()): number {
+  const tx = database.transaction(() => {
+    database
+      .prepare(
+        `UPDATE api_keys SET tier = 'pro', disabled = 0,
+           label = CASE WHEN label LIKE '%-bootstrap' THEN label ELSE 'pro-x402' END,
+           expires_at = MAX(?, COALESCE(expires_at, 0)) + ?
+         WHERE key_hash = ?`,
+      )
+      .run(now, termMs, keyHash);
+    database.prepare(`DELETE FROM free_key_grants WHERE key_hash = ?`).run(keyHash);
+    return (database.prepare(`SELECT expires_at FROM api_keys WHERE key_hash = ?`).get(keyHash) as { expires_at: number }).expires_at;
+  });
+  return tx();
+}
+
+export function recordProPurchase(
+  database: Database.Database,
+  keyHash: string,
+  days: number,
+  amountAtomic: number,
+  renewed: boolean,
+  now = Date.now(),
+): void {
+  database
+    .prepare(`INSERT INTO pro_purchases (key_hash, purchased_at, days, amount_atomic, renewed) VALUES (?, ?, ?, ?, ?)`)
+    .run(keyHash, now, days, amountAtomic, renewed ? 1 : 0);
 }
 
 export function upsertKey(database: Database.Database, keyHash: string, tier: TierName, label?: string): void {
@@ -90,7 +158,7 @@ export function disableMissingBootstrapKeys(database: Database.Database, present
 
 export function getKey(database: Database.Database, keyHash: string): KeyRow | undefined {
   const row = database.prepare(`SELECT * FROM api_keys WHERE key_hash = ?`).get(keyHash) as
-    | { key_hash: string; tier: TierName; label: string | null; created_at: number; disabled: number }
+    | { key_hash: string; tier: TierName; label: string | null; created_at: number; disabled: number; expires_at: number | null }
     | undefined;
   if (!row) return undefined;
   return {
@@ -99,6 +167,7 @@ export function getKey(database: Database.Database, keyHash: string): KeyRow | u
     label: row.label,
     createdAt: row.created_at,
     disabled: row.disabled,
+    expiresAt: row.expires_at ?? null,
   };
 }
 
@@ -194,7 +263,7 @@ export function recordFreeKeyGrant(
     if (prior) {
       // Deleted, not disabled: its usage moves to the new key below, so a dead
       // row per re-issue would only grow the table.
-      database.prepare(`DELETE FROM api_keys WHERE key_hash = ?`).run(prior.keyHash);
+      database.prepare(`DELETE FROM api_keys WHERE key_hash = ? AND tier = 'free'`).run(prior.keyHash);
       database.prepare(`UPDATE usage_counters SET key_hash = ? WHERE key_hash = ?`).run(newKeyHash, prior.keyHash);
     }
     database

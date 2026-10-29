@@ -64,6 +64,8 @@ export interface Config {
     asset: string;
     facilitatorUrl: string | undefined;
     pricePerCallUsdc: number;
+    /** Overrides the Pro price (USD, paid in USDC); unset = the tier price. For tests and promotions. */
+    proPriceUsdc?: number;
   };
 
   /** Telegram alert delivery; off unless TELEGRAM_BOT_TOKEN is set. */
@@ -161,6 +163,7 @@ export function loadConfig(): Config {
       asset: process.env.X402_ASSET ?? "USDC",
       facilitatorUrl: process.env.X402_FACILITATOR_URL?.trim() || undefined,
       pricePerCallUsdc: envNum("X402_PRICE_PER_CALL_USDC", 0.01),
+      proPriceUsdc: process.env.X402_PRO_PRICE_USDC?.trim() ? envNum("X402_PRO_PRICE_USDC", 29) : undefined,
     },
 
     telegram: {
