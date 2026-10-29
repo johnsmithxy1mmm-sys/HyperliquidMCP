@@ -1,6 +1,6 @@
 {
   "name": "hypersignal-mcp",
-  "version": "1.15.0",
+  "version": "1.15.1",
   "description": "Monetized MCP server for Hyperliquid analytics and signals (free market data + premium whale/liquidation/funding/risk signals + optional builder-code trading).",
   "mcpName": "io.github.johnsmithxy1mmm-sys/hypersignal-mcp",
   "type": "module",
