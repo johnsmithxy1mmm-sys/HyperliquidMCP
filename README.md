@@ -80,6 +80,25 @@ turn it on after a testnet run. Copy-trading mirrors main-dex positions only.
 
 ---
 
+## Try it on the hosted server
+
+Nothing to install. Free tools work without a key. For the premium tools, call `hl_request_free_key`
+once: it returns a key with 100 premium calls a month, no signup.
+
+Claude Code:
+```bash
+claude mcp add --transport http hypersignal https://hypersmash.fly.dev/mcp --header "X-API-Key: <your key>"
+```
+
+Cursor (`.cursor/mcp.json`):
+```json
+{ "mcpServers": { "hypersignal": { "url": "https://hypersmash.fly.dev/mcp", "headers": { "X-API-Key": "<your key>" } } } }
+```
+
+Without a key the free tools still work; add the key after `hl_request_free_key` has issued one.
+
+---
+
 ## Install
 
 ### Requirements
@@ -125,10 +144,36 @@ Point an MCP HTTP client at `https://your-host/mcp` and send `X-API-Key: <key>` 
 
 ---
 
-## Monetization
+## Pricing
 
 | Tier | Limit | Price |
 |---|---|---|
+| anonymous (no key) | free tools only | — |
+| free key | 100 premium calls/month | $0 |
+| pro key | unlimited premium calls | $29/month |
+| x402 pay-per-call | per premium call | $0.01 USDC on Base, where the server has x402 switched on |
+
+**How to get each**
+- **Free key:** call `hl_request_free_key`. Instant, no signup.
+- **x402 pay-per-call:** a premium call without a key answers with x402 payment requirements when the
+  server has x402 enabled; an x402-capable client pays in USDC on Base and the call runs.
+  On the hosted server this is not enabled yet.
+- **Pro:** keys are issued by the operator for now. Open a
+  [GitHub issue](https://github.com/johnsmithxy1mmm-sys/HyperliquidMCP/issues/new?title=Pro+key+request)
+  titled "Pro key request" and say how to reach you (for example a Telegram handle). The operator
+  replies there with payment details and sends the key privately. Never post a key in an issue.
+
+**For operators**
+- **API keys:** provision via `HYPERSIGNAL_PRO_KEYS` / `HYPERSIGNAL_FREE_KEYS` (comma-separated raw
+  keys, hashed before storage in SQLite). Usage counters are per key, per month. A key removed from
+  these lists is revoked on the next start.
+- **x402:** when a request has no key/quota and `X402_ENABLED=true`, premium tools return an x402
+  payment-required response with requirements; after facilitator verification+settlement the call
+  runs. Without a facilitator it fails closed (never fabricates a payment).
+- **Apify:** `apify-actor/` re-exports the best-selling premium tools as a pay-per-event Actor.
+  It is private for now.
+
+---|---|---|
 | anonymous (no key) | free tools only | — |
 | free key | 100 premium calls/month | $0 |
 | pro key | unlimited analytics | $19/mo |

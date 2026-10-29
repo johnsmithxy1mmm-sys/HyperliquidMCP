@@ -5,6 +5,11 @@
 
 export type TierName = "anonymous" | "free" | "pro";
 
+/** Where a buyer finds out how to pay: every message that quotes a price points here. */
+export const PRICING_URL = "https://github.com/johnsmithxy1mmm-sys/HyperliquidMCP#pricing";
+
+const PRO_PRICE_USD_MONTH = 29;
+
 export interface TierConfig {
   name: TierName;
   /** Monthly premium-call allowance; null = unlimited. */
@@ -29,8 +34,8 @@ export const TIERS: Record<TierName, TierConfig> = {
   pro: {
     name: "pro",
     monthlyPremiumCalls: null,
-    priceUsdMonth: 19,
-    description: "Pro: unlimited analytics for $19/month.",
+    priceUsdMonth: PRO_PRICE_USD_MONTH,
+    description: `Pro: unlimited analytics for $${PRO_PRICE_USD_MONTH}/month. How to get it: ${PRICING_URL}`,
   },
 };
 

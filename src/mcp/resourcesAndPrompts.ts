@@ -7,7 +7,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolContext } from "../tools/registry.js";
 import { buildPublicProof } from "../public/proof.js";
-import { TIERS } from "../billing/tiers.js";
+import { TIERS, PRICING_URL } from "../billing/tiers.js";
 
 const json = (uri: URL, value: unknown) => ({
   contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(value, null, 2) }],
@@ -31,7 +31,7 @@ export function registerResourcesAndPrompts(server: McpServer, ctx: ToolContext,
             `# HyperSignal MCP ${version}\n\n` +
             "Hyperliquid analytics for agents. Free tools need no key; premium tools need an API key or x402.\n\n" +
             `- Free key: call \`hl_request_free_key\` (${TIERS.free.monthlyPremiumCalls} premium calls/month).\n` +
-            `- Pro: unlimited premium calls, $${TIERS.pro.priceUsdMonth}/month.\n` +
+            `- Pro: unlimited premium calls, $${TIERS.pro.priceUsdMonth}/month. How to pay: ${PRICING_URL}\n` +
             "- Public track record of the server's own signals: GET /track-record on the hosted server.\n\n" +
             "Analytics only, not investment advice.",
         },

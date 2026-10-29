@@ -22,7 +22,7 @@ import {
   countFreeKeyGrants,
   recordFreeKeyGrant,
 } from "./db.js";
-import { tierFor, TIERS, type TierName } from "./tiers.js";
+import { tierFor, TIERS, PRICING_URL, type TierName } from "./tiers.js";
 import { buildPaymentRequirements, verifyPayment } from "./x402.js";
 import { log } from "../logger.js";
 
@@ -182,7 +182,7 @@ export class BillingService {
         throw new PaymentRequiredError(
           `Payment required for premium tool "${toolName}". ` +
             `Pay per call via x402 (${this.config.x402.pricePerCallUsdc} ${this.config.x402.asset} on ${this.config.x402.network}) ` +
-            `or use a Pro key ($${TIERS.pro.priceUsdMonth}/mo unlimited).`,
+            `or use a Pro key ($${TIERS.pro.priceUsdMonth}/mo unlimited; how to get one: ${PRICING_URL}).`,
           { toolName, reason: result.reason, x402: requirements, upgrade: TIERS.pro.description },
         );
       }
@@ -194,7 +194,7 @@ export class BillingService {
       throw new PaymentRequiredError(
         outOfQuota
           ? `Premium tool "${toolName}": this key's ${TIERS.free.monthlyPremiumCalls} free premium calls for the ` +
-            `month are used up. Pro is unlimited at $${TIERS.pro.priceUsdMonth}/mo.`
+            `month are used up. Pro is unlimited at $${TIERS.pro.priceUsdMonth}/mo; how to get it: ${PRICING_URL}`
           : `Premium tool "${toolName}" needs an API key. Call hl_request_free_key to get one instantly — ` +
             `it is free and grants ${TIERS.free.monthlyPremiumCalls} premium calls/month. ` +
             `Then retry this call with the key in the X-API-Key header.`,
