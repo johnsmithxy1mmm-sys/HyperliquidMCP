@@ -13,6 +13,10 @@ import { PaymentRequiredError, ToolError } from "../core/errors.js";
 import {
   getDb,
   getKey,
+  grantProKey,
+  discardProKey,
+  extendProKey,
+  recordProPurchase,
   incrementUsage,
   decrementUsage,
   monthlyTotal,
@@ -22,7 +26,7 @@ import {
   countFreeKeyGrants,
   recordFreeKeyGrant,
 } from "./db.js";
-import { tierFor, TIERS, PRICING_URL, type TierName } from "./tiers.js";
+import { tierFor, TIERS, PRICING_URL, PRO_TERM_DAYS, type TierName } from "./tiers.js";
 import { buildPaymentRequirements, verifyPayment } from "./x402.js";
 import { log } from "../logger.js";
 
@@ -30,6 +34,23 @@ export interface RequestAuth {
   apiKey?: string;
   xPayment?: string;
 }
+
+/** A Pro purchase worked out before payment; `commit` runs only after the payment has settled. */
+export interface ProPurchasePlan {
+  /** The new key's raw value: only for a new key (a renewal keeps its own). */
+  rawKey?: string;
+  renewed: boolean;
+  /** The new end of the term, as it stands now (a renewal's final value comes from `commit`). */
+  expiresAt: number;
+  /** Records the purchase and applies a renewal; returns the key's final end. */
+  commit(): number;
+  /** The payment did not settle: drop what was prepared. */
+  discard(): void;
+  /** Quoted in the answer and the log, so a payment that went wrong can be matched to its purchase. */
+  reference: string;
+}
+
+const DAY_MS = 86_400_000;
 
 /** Ceiling on distinct self-serve fingerprints, so the grants table is bounded. */
 const MAX_SELF_SERVE_KEYS = 5_000;
@@ -147,10 +168,19 @@ export class BillingService {
    */
   authorizerFor(
     auth: RequestAuth,
-  ): (toolName: string) => Promise<{ refund: () => void; settle?: () => Promise<void> } | undefined> {
-    return async (toolName: string) => {
+  ): (toolName: string, opts?: { priceUsdc?: number }) => Promise<{ refund: () => void; settle?: () => Promise<void> } | undefined> {
+    return async (toolName: string, opts?: { priceUsdc?: number }) => {
+      // A purchase is paid for over x402, whatever keys or quota the caller holds.
+      if (opts?.priceUsdc !== undefined) return this.purchaseCharge(auth, toolName, opts.priceUsdc);
+
       const keyRow = auth.apiKey ? getKey(this.db, this.hash(auth.apiKey)) : undefined;
-      const tier = tierFor(keyRow && !keyRow.disabled ? keyRow.tier : "anonymous");
+      const expiredAt = keyRow && !keyRow.disabled && keyRow.expiresAt !== null && keyRow.expiresAt <= Date.now() ? keyRow.expiresAt : undefined;
+      const renewHint =
+        expiredAt === undefined
+          ? ""
+          : ` Your Pro key expired on ${new Date(expiredAt).toISOString().slice(0, 10)}; renew it with hl_buy_pro ` +
+            `($${TIERS.pro.priceUsdMonth} USDC for ${PRO_TERM_DAYS} more days).`;
+      const tier = tierFor(keyRow && !keyRow.disabled && expiredAt === undefined ? keyRow.tier : "anonymous");
       const period = this.period();
       const charge = (keyHash: string) => {
         incrementUsage(this.db, keyHash, period, toolName);
@@ -182,7 +212,8 @@ export class BillingService {
         throw new PaymentRequiredError(
           `Payment required for premium tool "${toolName}". ` +
             `Pay per call via x402 (${this.config.x402.pricePerCallUsdc} ${this.config.x402.asset} on ${this.config.x402.network}) ` +
-            `or use a Pro key ($${TIERS.pro.priceUsdMonth}/mo unlimited; how to get one: ${PRICING_URL}).`,
+            `or use a Pro key ($${TIERS.pro.priceUsdMonth}/mo unlimited; how to get one: ${PRICING_URL}).` +
+            renewHint,
           { toolName, reason: result.reason, x402: requirements, upgrade: TIERS.pro.description },
         );
       }
@@ -190,16 +221,117 @@ export class BillingService {
       // No key / quota and x402 disabled. The message MUST carry a usable next
       // step: advertising a free tier with no way to obtain it is a dead end,
       // and a dead end here is where every new user is lost.
-      const outOfQuota = Boolean(keyRow);
+      const outOfQuota = Boolean(keyRow) && expiredAt === undefined;
       throw new PaymentRequiredError(
-        outOfQuota
+        expiredAt !== undefined
+          ? `Premium tool "${toolName}":${renewHint} How to pay: ${PRICING_URL}`
+          : outOfQuota
           ? `Premium tool "${toolName}": this key's ${TIERS.free.monthlyPremiumCalls} free premium calls for the ` +
             `month are used up. Pro is unlimited at $${TIERS.pro.priceUsdMonth}/mo; how to get it: ${PRICING_URL}`
           : `Premium tool "${toolName}" needs an API key. Call hl_request_free_key to get one instantly — ` +
             `it is free and grants ${TIERS.free.monthlyPremiumCalls} premium calls/month. ` +
             `Then retry this call with the key in the X-API-Key header.`,
-        { toolName, tiers: TIERS, nextStep: outOfQuota ? "upgrade_to_pro" : "call hl_request_free_key" },
+        {
+          toolName,
+          tiers: TIERS,
+          nextStep: expiredAt !== undefined ? "renew_pro" : outOfQuota ? "upgrade_to_pro" : "call hl_request_free_key",
+        },
       );
+    };
+  }
+
+  /** The Pro price in USDC: the tier price unless the operator overrides it. */
+  private proPriceUsdc(): number {
+    return this.config.x402.proPriceUsdc ?? TIERS.pro.priceUsdMonth;
+  }
+
+  /** x402 charge for a purchase: reserved now, settled once the tool has delivered. */
+  private async purchaseCharge(auth: RequestAuth, toolName: string, priceUsdc: number) {
+    if (!this.x402Ready) {
+      throw new ToolError(
+        "purchases_unavailable",
+        `Buying Pro here needs x402 payments, which this server does not have switched on. How to get Pro: ${PRICING_URL}`,
+      );
+    }
+    const requirements = buildPaymentRequirements(this.config, toolName, priceUsdc);
+    const result = await verifyPayment(this.config, this.db, auth.xPayment, requirements);
+    if (result.ok && result.charge) {
+      log.info("x402 payment verified and reserved", { toolName });
+      const { charge: payment } = result;
+      return { refund: () => payment.release(), settle: () => payment.settle() };
+    }
+    throw new PaymentRequiredError(
+      `${toolName} costs ${priceUsdc} ${this.config.x402.asset} on ${this.config.x402.network}, paid over x402. ` +
+        `Pay and retry with the X-PAYMENT header. How to pay: ${PRICING_URL}`,
+      { toolName, reason: result.reason, x402: requirements },
+    );
+  }
+
+  /** Refuse, before any payment, a key a purchase cannot apply to (it never runs out, or the operator owns it). */
+  assertProPurchasable(subject: string): void {
+    const row = subject === "anon" ? undefined : getKey(this.db, subject);
+    if (!row) return;
+    // Judged by what the key is, not by its label: a hand-made key may carry any label.
+    if (row.tier === "pro" && row.expiresAt === null) {
+      throw new ToolError("already_unlimited", "This Pro key has no end date: there is nothing to buy.");
+    }
+    if (row.label?.endsWith("-bootstrap")) {
+      throw new ToolError(
+        "operator_key",
+        `This key was issued by the operator and cannot be bought up. How to get Pro: ${PRICING_URL}`,
+      );
+    }
+  }
+
+  /**
+   * Work out a Pro purchase for `subject` (a key hash, or "anon" for a new key).
+   * A new key is stored now: its raw value leaves only in the result, which is
+   * withheld if the payment does not settle, so an unsettled one stays unusable.
+   * A renewal is applied by `commit`, after settlement: the old key is known to
+   * the caller, so extending it earlier would hand out time for a failed payment.
+   */
+  planProPurchase(subject: string, now = Date.now()): ProPurchasePlan {
+    const termMs = PRO_TERM_DAYS * DAY_MS;
+    const amountAtomic = Math.round(this.proPriceUsdc() * 1_000_000);
+    const row = subject === "anon" ? undefined : getKey(this.db, subject);
+    const reference = randomBytes(4).toString("hex");
+    // The bookkeeping row must never undo a purchase that has been paid for.
+    const record = (keyHash: string, renewed: boolean) => {
+      try {
+        recordProPurchase(this.db, keyHash, PRO_TERM_DAYS, amountAtomic, renewed);
+      } catch (err) {
+        log.error("pro purchase not recorded", { reference, keyHash, err: String(err) });
+      }
+    };
+    if (!row) {
+      const rawKey = `hs_pro_${randomBytes(24).toString("base64url")}`;
+      const keyHash = this.hash(rawKey);
+      const expiresAt = now + termMs;
+      grantProKey(this.db, keyHash, expiresAt);
+      log.info("pro purchase pending", { reference, keyHash, renewed: false });
+      return {
+        rawKey,
+        renewed: false,
+        expiresAt,
+        reference,
+        commit: () => {
+          record(keyHash, false);
+          return expiresAt;
+        },
+        discard: () => discardProKey(this.db, keyHash),
+      };
+    }
+    log.info("pro purchase pending", { reference, keyHash: row.keyHash, renewed: true });
+    return {
+      renewed: true,
+      expiresAt: Math.max(now, row.expiresAt ?? 0) + termMs,
+      reference,
+      commit: () => {
+        const end = extendProKey(this.db, row.keyHash, termMs);
+        record(row.keyHash, true);
+        return end;
+      },
+      discard: () => undefined,
     };
   }
 }

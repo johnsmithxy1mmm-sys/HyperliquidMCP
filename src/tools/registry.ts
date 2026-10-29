@@ -40,6 +40,15 @@ export interface Charge {
 export interface BillingLike {
   issueFreeKey(fingerprint: string): { rawKey: string; monthlyPremiumCalls: number; reissued: boolean };
   freeKeyUsage(fingerprint: string): number | null;
+  assertProPurchasable(subject: string): void;
+  planProPurchase(subject: string): {
+    rawKey?: string;
+    renewed: boolean;
+    expiresAt: number;
+    commit(): number;
+    discard(): void;
+    reference: string;
+  };
 }
 
 export interface ToolContext {
@@ -70,7 +79,7 @@ export interface ToolContext {
    * Premium billing gate. Free/trading tools ignore it; premium tools await it
    * first. Returns what it charged, if anything.
    */
-  authorize: (toolName: string) => Promise<Charge | undefined>;
+  authorize: (toolName: string, opts?: { priceUsdc?: number }) => Promise<Charge | undefined>;
   /** Present only in stdio mode when trading is enabled. */
   trading?: TradingService;
   /** Background execution runner (stdio trading only). */
@@ -101,7 +110,27 @@ export interface ToolDef {
   requiresSubject?: boolean;
   /** Registered in local stdio mode only, never on the remote HTTP server. */
   localOnly?: boolean;
-  run: (args: Record<string, unknown>, ctx: ToolContext) => Promise<{ summary: string; data: unknown }>;
+  /** Registered on the remote HTTP server only (it needs billing and x402). */
+  remoteOnly?: boolean;
+  /**
+   * The tool is a purchase: always paid over x402 at this price, whatever keys
+   * or quota the caller holds. `precheck` refuses a call that could not be
+   * served, before any payment is reserved.
+   */
+  payOnly?: { priceUsdc: (ctx: ToolContext) => number; precheck?: (ctx: ToolContext) => void };
+  run: (
+    args: Record<string, unknown>,
+    ctx: ToolContext,
+  ) => Promise<{
+    summary: string;
+    data: unknown;
+    /** Runs after the payment has settled and before the result is returned: for what must not happen on an unpaid call. */
+    onDelivered?: () => void;
+    /** Runs when the call ends without delivering (payment refused, cancelled): drops what run prepared. */
+    onUndelivered?: () => void;
+    /** Quoted in errors and logs so a payment that went wrong can be matched to this call. */
+    reference?: string;
+  }>;
 }
 
 /**
@@ -137,6 +166,8 @@ export function registerTool(server: McpServer, def: ToolDef, ctx: ToolContext):
     // The SDK validates args against inputSchema before calling us.
     async (args: Record<string, unknown>, extra?: { signal?: AbortSignal }) => {
       let charge: Charge | undefined;
+      let undo: (() => void) | undefined;
+      let reference: string | undefined;
       try {
         if (def.requiresSubject && (!ctx.subject || ctx.subject === "anon")) {
           throw new ToolError(
@@ -145,8 +176,15 @@ export function registerTool(server: McpServer, def: ToolDef, ctx: ToolContext):
               `Pay-per-call x402 has no stable identity, so it cannot own alerts.`,
           );
         }
-        if (def.tier === "premium") charge = await ctx.authorize(def.name);
-        const { summary, data } = await def.run(args ?? {}, ctx);
+        if (def.payOnly) {
+          def.payOnly.precheck?.(ctx);
+          charge = await ctx.authorize(def.name, { priceUsdc: def.payOnly.priceUsdc(ctx) });
+        } else if (def.tier === "premium") {
+          charge = await ctx.authorize(def.name);
+        }
+        const { summary, data, onDelivered, onUndelivered, reference: ref } = await def.run(args ?? {}, ctx);
+        undo = onUndelivered;
+        reference = ref;
         // The SDK drops the response of a cancelled or disconnected request, so
         // charging for it would take money for a result nobody receives.
         if (extra?.signal?.aborted) {
@@ -154,7 +192,29 @@ export function registerTool(server: McpServer, def: ToolDef, ctx: ToolContext):
         }
         // x402 settles only now that the tool has delivered; if settlement
         // fails, the result is withheld rather than given away.
-        await charge?.settle?.();
+        try {
+          await charge?.settle?.();
+        } catch (err) {
+          if (reference && err instanceof ToolError) {
+            log.error("payment for a purchase did not settle", { tool: def.name, reference, code: err.code });
+            throw new ToolError(err.code, `${err.message} Reference: ${reference}.`, { ...err.details, reference });
+          }
+          throw err;
+        }
+        undo = undefined; // paid: what run prepared is now the purchase
+        try {
+          onDelivered?.();
+        } catch (err) {
+          // The money has moved: say so, with enough for the operator to put it right.
+          const ref = reference ?? randomBytes(4).toString("hex");
+          log.error("tool could not finish after its payment settled", { tool: def.name, reference: ref, err: String(err) });
+          throw new ToolError(
+            "activation_failed",
+            `Your payment was taken but ${def.name} could not finish. Open an issue with the time of the payment and ` +
+              `this reference: ${ref}.`,
+            { reference: ref },
+          );
+        }
         return {
           content: [{ type: "text" as const, text: summary }],
           structuredContent: data as Record<string, unknown>,
@@ -162,6 +222,7 @@ export function registerTool(server: McpServer, def: ToolDef, ctx: ToolContext):
       } catch (err) {
         // A call that delivered nothing must not use up the caller's quota or money.
         charge?.refund();
+        undo?.();
         return toErrorResult(err, def.name);
       }
     },

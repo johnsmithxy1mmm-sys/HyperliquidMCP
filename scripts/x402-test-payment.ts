@@ -11,7 +11,13 @@
  *   # fund that address with testnet USDC (https://faucet.circle.com, Base Sepolia), then:
  *   npx tsx scripts/x402-test-payment.ts --key ./testnet.key --server http://localhost:18082/mcp
  *
- * The key is never printed. Never point it at a mainnet key.
+ * Buying Pro (set X402_PRO_PRICE_USDC=0.05 on the test server so the faucet's USDC is enough):
+ *
+ *   ... --tool hl_buy_pro --save-key ./pro.key              # new Pro key, saved (mode 600), never printed
+ *   ... --tool hl_buy_pro --api-key ./pro.key               # renew it
+ *   ... --tool hl_funding_screener --api-key ./pro.key      # use it (no payment)
+ *
+ * The keys are never printed. Never point it at a mainnet key.
  */
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
@@ -75,14 +81,19 @@ export async function buildXPayment(
 interface ToolResult {
   isError?: boolean;
   content?: Array<{ text?: string }>;
-  structuredContent?: { error?: string; x402?: { accepts: PaymentRequirement[] } };
+  structuredContent?: { error?: string; x402?: { accepts: PaymentRequirement[] }; apiKey?: string; expiresAt?: string; renewed?: boolean };
 }
 
-async function callTool(server: string, tool: string, xPayment?: string): Promise<ToolResult> {
+async function callTool(server: string, tool: string, xPayment?: string, apiKey?: string): Promise<ToolResult> {
   const res = await fetch(server, {
     method: "POST",
-    headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...(xPayment ? { "x-payment": xPayment } : {}) },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: tool, arguments: { limit: 2 } } }),
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      ...(xPayment ? { "x-payment": xPayment } : {}),
+      ...(apiKey ? { "x-api-key": apiKey } : {}),
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: tool, arguments: tool === "hl_buy_pro" ? {} : { limit: 2 } } }),
   });
   const text = await res.text();
   const line = text.split("\n").find((l) => l.startsWith("data:"));
@@ -109,16 +120,31 @@ async function main(): Promise<void> {
   const tool = arg("--tool") ?? "hl_funding_screener";
   const account = privateKeyToAccount(readFileSync(keyFile, "utf8").trim() as Hex);
 
-  const first = await callTool(server, tool);
+  const saveKey = arg("--save-key");
+  if (saveKey && existsSync(saveKey)) throw new Error(`${saveKey} exists; refusing to overwrite a key (checked before paying)`);
+  const apiKeyFile = arg("--api-key");
+  const apiKey = apiKeyFile ? readFileSync(apiKeyFile, "utf8").trim() : undefined;
+
+  const first = await callTool(server, tool, undefined, apiKey);
+  if (!first.isError) {
+    console.log(`No payment needed: ${(first.content?.[0]?.text ?? "").slice(0, 120)}`);
+    return;
+  }
   const requirement = first.structuredContent?.x402?.accepts?.[0];
   if (first.structuredContent?.error !== "payment_required" || !requirement) {
     throw new Error(`Expected a payment_required answer with x402 requirements, got: ${JSON.stringify(first).slice(0, 300)}`);
   }
   console.log(`Server wants ${Number(requirement.maxAmountRequired) / 1e6} USDC on ${requirement.network}, paid to ${requirement.payTo}`);
 
-  const second = await callTool(server, tool, await buildXPayment(requirement, account));
+  const second = await callTool(server, tool, await buildXPayment(requirement, account), apiKey);
   if (second.isError) throw new Error(`Paid call failed: ${JSON.stringify(second.structuredContent ?? second.content).slice(0, 400)}`);
+  const issued = second.structuredContent?.apiKey;
+  if (issued && saveKey) {
+    writeFileSync(saveKey, issued);
+    chmodSync(saveKey, 0o600);
+  }
   console.log(`Paid call succeeded: ${(second.content?.[0]?.text ?? "").slice(0, 120)}`);
+  if (second.structuredContent?.expiresAt) console.log(`Pro runs until ${second.structuredContent.expiresAt} (renewed: ${second.structuredContent.renewed})`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

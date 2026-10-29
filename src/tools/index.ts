@@ -16,6 +16,7 @@ import { signalPubkey } from "./free/signalPubkey.js";
 import { adminStats } from "./free/adminStats.js";
 import { scoreCalibration } from "./free/scoreCalibration.js";
 import { requestFreeKey } from "./free/requestFreeKey.js";
+import { buyPro } from "./free/buyPro.js";
 // Premium
 import { whalePositions } from "./premium/whalePositions.js";
 import { whaleFlowAlerts } from "./premium/whaleFlowAlerts.js";
@@ -40,6 +41,7 @@ import { setWebhook, deleteWebhook } from "./free/webhook.js";
 
 export const FREE_TOOLS: ToolDef[] = [
   requestFreeKey,
+  buyPro,
   getMarkets,
   getOrderbook,
   getCandles,
@@ -89,7 +91,7 @@ export const ALL_TOOLS: ToolDef[] = [...FREE_TOOLS, ...PREMIUM_TOOLS, ...TRADING
 
 /** Register the given tiers' tools onto a server using the provided context. */
 export function registerTools(server: McpServer, ctx: ToolContext, tiers: Tier[]): number {
-  const selected = ALL_TOOLS.filter((t) => tiers.includes(t.tier) && !(t.localOnly && ctx.mode === "http"));
+  const selected = ALL_TOOLS.filter((t) => tiers.includes(t.tier) && !(t.localOnly && ctx.mode === "http") && !(t.remoteOnly && ctx.mode !== "http"));
   for (const def of selected) registerTool(server, def, ctx);
   return selected.length;
 }
