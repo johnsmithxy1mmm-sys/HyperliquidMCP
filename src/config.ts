@@ -163,7 +163,9 @@ export function loadConfig(): Config {
       asset: process.env.X402_ASSET ?? "USDC",
       facilitatorUrl: process.env.X402_FACILITATOR_URL?.trim() || undefined,
       pricePerCallUsdc: envNum("X402_PRICE_PER_CALL_USDC", 0.01),
-      proPriceUsdc: process.env.X402_PRO_PRICE_USDC?.trim() ? envNum("X402_PRO_PRICE_USDC", 29) : undefined,
+      proPriceUsdc: process.env.X402_PRO_PRICE_USDC?.trim()
+        ? envNumClamped("X402_PRO_PRICE_USDC", 29, 0.01, 100_000) // floor: a 0 or leftover test value must not give Pro away
+        : undefined,
     },
 
     telegram: {

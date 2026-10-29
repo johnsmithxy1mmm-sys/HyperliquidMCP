@@ -120,6 +120,8 @@ async function main(): Promise<void> {
   const tool = arg("--tool") ?? "hl_funding_screener";
   const account = privateKeyToAccount(readFileSync(keyFile, "utf8").trim() as Hex);
 
+  const saveKey = arg("--save-key");
+  if (saveKey && existsSync(saveKey)) throw new Error(`${saveKey} exists; refusing to overwrite a key (checked before paying)`);
   const apiKeyFile = arg("--api-key");
   const apiKey = apiKeyFile ? readFileSync(apiKeyFile, "utf8").trim() : undefined;
 
@@ -137,9 +139,7 @@ async function main(): Promise<void> {
   const second = await callTool(server, tool, await buildXPayment(requirement, account), apiKey);
   if (second.isError) throw new Error(`Paid call failed: ${JSON.stringify(second.structuredContent ?? second.content).slice(0, 400)}`);
   const issued = second.structuredContent?.apiKey;
-  const saveKey = arg("--save-key");
   if (issued && saveKey) {
-    if (existsSync(saveKey)) throw new Error(`${saveKey} exists; refusing to overwrite a key`);
     writeFileSync(saveKey, issued);
     chmodSync(saveKey, 0o600);
   }

@@ -16,6 +16,7 @@ export const buyPro: ToolDef = {
     "Without an X-API-Key it issues a new Pro key; with one it renews that key (a free key is upgraded in place), " +
     `adding ${PRO_TERM_DAYS} days to its current end. The first call answers with the payment requirements; pay and retry ` +
     "with the X-PAYMENT header. The payment is taken only once the key is ready. No automatic refunds. " +
+    "If the answer says the payment could not be confirmed, do not pay again: quote its reference. " +
     `How to pay: ${PRICING_URL}`,
   inputSchema: {},
   outputSchema: {
@@ -25,6 +26,7 @@ export const buyPro: ToolDef = {
     daysAdded: z.number(),
     apiKey: z.string().optional(),
     header: z.string().optional(),
+    reference: z.string(),
   },
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   payOnly: {
@@ -41,13 +43,17 @@ export const buyPro: ToolDef = {
       renewed: plan.renewed,
       expiresAt: iso(plan.expiresAt),
       daysAdded: PRO_TERM_DAYS,
+      reference: plan.reference,
       ...(plan.rawKey ? { apiKey: plan.rawKey, header: `X-API-Key: ${plan.rawKey}` } : {}),
     };
     return {
+      // The key is in the text too: some clients show an agent only the text. It is shown once; only its hash is kept.
       summary: plan.rawKey
-        ? `Pro key issued for ${PRO_TERM_DAYS} days. Send it as X-API-Key. Keep it: it is shown only once.`
+        ? `Pro key (shown once, keep it): ${plan.rawKey}\nValid for ${PRO_TERM_DAYS} days. Send it as the X-API-Key header.`
         : `Pro extended by ${PRO_TERM_DAYS} days.`,
       data,
+      reference: plan.reference,
+      onUndelivered: () => plan.discard(),
       onDelivered: () => {
         data.expiresAt = iso(plan.commit());
         log.info("pro purchase settled", { renewed: plan.renewed, days: PRO_TERM_DAYS });

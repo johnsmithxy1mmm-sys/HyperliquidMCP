@@ -2997,7 +2997,7 @@ test("the test client signs an EIP-3009 payment the exact scheme accepts, bound 
 /** `hl_buy_pro` registered behind a billing service; returns a function that makes one call. */
 async function proPurchase(billing: BillingService, auth: { apiKey?: string; xPayment?: string }, config: Config = x402Config()) {
   const { buyPro } = await import("../src/tools/free/buyPro.js");
-  let handler!: (args: Record<string, unknown>) => Promise<{ isError?: boolean; structuredContent?: Record<string, any> }>;
+  let handler!: (args: Record<string, unknown>) => Promise<{ isError?: boolean; content?: Array<{ text: string }>; structuredContent?: Record<string, any> }>;
   const server = {
     registerTool: (_name: string, _config: unknown, h: typeof handler) => {
       handler = h;
@@ -3173,4 +3173,145 @@ test("old api_keys tables gain an expiry column and keep their keys, which never
   migrateApiKeys(db); // idempotent
 
   assert.equal(readKey(db, "old")?.expiresAt, null);
+});
+
+
+const proKeyCount = () =>
+  (getDb(x402Config().dbPath).prepare(`SELECT COUNT(*) AS n FROM api_keys WHERE label = 'pro-x402'`).get() as { n: number }).n;
+
+test("the new Pro key is in the text of the answer, not only in the structured data", async () => {
+  const billing = new BillingService(x402Config());
+  const restore = stubFacilitator({ settles: 0 });
+  let result: Awaited<ReturnType<Awaited<ReturnType<typeof proPurchase>>>>;
+  try {
+    result = await (await proPurchase(billing, { xPayment: x402Header("0xnonce-buy-text") }))();
+  } finally {
+    restore();
+  }
+
+  assert.ok(result.content?.[0].text.includes(result.structuredContent?.apiKey), "a client that shows only the text must still show the key");
+});
+
+test("a Pro purchase that does not settle leaves no half-made key behind", async () => {
+  const billing = new BillingService(x402Config());
+  const before = proKeyCount();
+  const restore = stubFacilitator({ settles: 0 }, FACILITATOR_REFUSES);
+  try {
+    await (await proPurchase(billing, { xPayment: x402Header("0xnonce-buy-orphan") }))();
+  } finally {
+    restore();
+  }
+
+  assert.equal(proKeyCount(), before);
+});
+
+test("when the outcome of the payment is unknown, no key is handed out and the answer carries a reference", async () => {
+  const billing = new BillingService(x402Config());
+  const before = proKeyCount();
+  const restore = stubFacilitator({ settles: 0 }, { status: 502, body: "<html>Bad Gateway</html>" });
+  let result: Awaited<ReturnType<Awaited<ReturnType<typeof proPurchase>>>>;
+  try {
+    result = await (await proPurchase(billing, { xPayment: x402Header("0xnonce-buy-unknown") }))();
+  } finally {
+    restore();
+  }
+
+  assert.equal(result.isError, true);
+  assert.equal(result.structuredContent?.apiKey, undefined);
+  assert.match(String(result.structuredContent?.reference), /^[0-9a-f]{8}$/);
+  assert.equal(proKeyCount(), before);
+});
+
+test("a purchase is delivered even when its bookkeeping row cannot be written", async () => {
+  const { migrateApiKeys } = await import("../src/billing/db.js");
+  const db = getDb(x402Config().dbPath);
+  const billing = new BillingService(x402Config());
+  db.exec(`DROP TABLE pro_purchases`);
+  const restore = stubFacilitator({ settles: 0 });
+  let result: Awaited<ReturnType<Awaited<ReturnType<typeof proPurchase>>>>;
+  try {
+    result = await (await proPurchase(billing, { xPayment: x402Header("0xnonce-buy-nobook") }))();
+  } finally {
+    restore();
+    migrateApiKeys(db);
+  }
+
+  assert.notEqual(result.isError, true);
+  assert.match(result.structuredContent?.apiKey, /^hs_pro_/);
+});
+
+test("a Pro key with no end date is refused a purchase whatever its label says", async () => {
+  const { upsertKey } = await import("../src/billing/db.js");
+  const billing = new BillingService(x402Config());
+  const rawKey = `hs_pro_by_hand_${Date.now()}`;
+  upsertKey(getDb(x402Config().dbPath), await sha256(rawKey), "pro", "given-to-a-friend");
+  const counts = { settles: 0 };
+  const restore = stubFacilitator(counts);
+  let result: Awaited<ReturnType<Awaited<ReturnType<typeof proPurchase>>>>;
+  try {
+    result = await (await proPurchase(billing, { apiKey: rawKey, xPayment: x402Header("0xnonce-byhand") }))();
+  } finally {
+    restore();
+  }
+
+  assert.equal(result.structuredContent?.error, "already_unlimited");
+  assert.equal(counts.settles, 0);
+  assert.equal((await keyRow(rawKey))?.expiresAt, null, "the key must stay as it was");
+});
+
+test("two renewals that race both add their 30 days", async () => {
+  const billing = new BillingService(x402Config());
+  const { rawKey } = billing.issueFreeKey("buy-pro-race");
+  const keyHash = await sha256(rawKey);
+  const inTenDays = Date.now() + 10 * DAY_MS;
+  getDb(x402Config().dbPath).prepare(`UPDATE api_keys SET tier='pro', label='pro-x402', expires_at=? WHERE key_hash=?`).run(inTenDays, keyHash);
+
+  const first = billing.planProPurchase(keyHash);
+  const second = billing.planProPurchase(keyHash); // planned before the first one was paid
+  first.commit();
+  second.commit();
+
+  assert.equal((await keyRow(rawKey))?.expiresAt, inTenDays + 60 * DAY_MS);
+});
+
+test("a key deleted between payment and activation fails cleanly with a reference, not a crash", async () => {
+  const billing = new BillingService(x402Config());
+  const { rawKey } = billing.issueFreeKey("buy-pro-vanish");
+  const keyHash = await sha256(rawKey);
+  const db = getDb(x402Config().dbPath);
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: unknown) => {
+    if (String(url).endsWith("/settle")) {
+      db.prepare(`DELETE FROM api_keys WHERE key_hash = ?`).run(keyHash); // gone while the payment settles
+      return new Response(JSON.stringify({ success: true, transaction: "0xtx" }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ isValid: true }), { status: 200 });
+  }) as typeof fetch;
+  let result: Awaited<ReturnType<Awaited<ReturnType<typeof proPurchase>>>>;
+  try {
+    result = await (await proPurchase(billing, { apiKey: rawKey, xPayment: x402Header("0xnonce-vanish") }))();
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  assert.equal(result.structuredContent?.error, "activation_failed");
+  assert.match(String(result.structuredContent?.message), /[0-9a-f]{8}/);
+});
+
+test("X402_PRO_PRICE_USDC cannot be set to nothing", async () => {
+  const { loadConfig, _resetConfigForTests } = await import("../src/config.js");
+  const before = process.env.X402_PRO_PRICE_USDC;
+  const price = (value: string) => {
+    process.env.X402_PRO_PRICE_USDC = value;
+    _resetConfigForTests(); // loadConfig is memoized
+    return loadConfig().x402.proPriceUsdc;
+  };
+  try {
+    assert.equal(price("0"), 0.01, "a zero price would give Pro away: it is lifted to the floor");
+    assert.equal(price("5"), 5);
+  } finally {
+    if (before === undefined) delete process.env.X402_PRO_PRICE_USDC;
+    else process.env.X402_PRO_PRICE_USDC = before;
+    _resetConfigForTests();
+  }
 });

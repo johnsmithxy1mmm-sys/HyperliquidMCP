@@ -14,6 +14,7 @@ import {
   getDb,
   getKey,
   grantProKey,
+  discardProKey,
   extendProKey,
   recordProPurchase,
   incrementUsage,
@@ -43,6 +44,10 @@ export interface ProPurchasePlan {
   expiresAt: number;
   /** Records the purchase and applies a renewal; returns the key's final end. */
   commit(): number;
+  /** The payment did not settle: drop what was prepared. */
+  discard(): void;
+  /** Quoted in the answer and the log, so a payment that went wrong can be matched to its purchase. */
+  reference: string;
 }
 
 const DAY_MS = 86_400_000;
@@ -266,12 +271,14 @@ export class BillingService {
   assertProPurchasable(subject: string): void {
     const row = subject === "anon" ? undefined : getKey(this.db, subject);
     if (!row) return;
+    // Judged by what the key is, not by its label: a hand-made key may carry any label.
+    if (row.tier === "pro" && row.expiresAt === null) {
+      throw new ToolError("already_unlimited", "This Pro key has no end date: there is nothing to buy.");
+    }
     if (row.label?.endsWith("-bootstrap")) {
       throw new ToolError(
-        row.tier === "pro" ? "already_unlimited" : "operator_key",
-        row.tier === "pro"
-          ? "This Pro key has no end date: there is nothing to buy."
-          : `This key was issued by the operator and cannot be bought up. How to get Pro: ${PRICING_URL}`,
+        "operator_key",
+        `This key was issued by the operator and cannot be bought up. How to get Pro: ${PRICING_URL}`,
       );
     }
   }
@@ -287,29 +294,44 @@ export class BillingService {
     const termMs = PRO_TERM_DAYS * DAY_MS;
     const amountAtomic = Math.round(this.proPriceUsdc() * 1_000_000);
     const row = subject === "anon" ? undefined : getKey(this.db, subject);
+    const reference = randomBytes(4).toString("hex");
+    // The bookkeeping row must never undo a purchase that has been paid for.
+    const record = (keyHash: string, renewed: boolean) => {
+      try {
+        recordProPurchase(this.db, keyHash, PRO_TERM_DAYS, amountAtomic, renewed);
+      } catch (err) {
+        log.error("pro purchase not recorded", { reference, keyHash, err: String(err) });
+      }
+    };
     if (!row) {
       const rawKey = `hs_pro_${randomBytes(24).toString("base64url")}`;
       const keyHash = this.hash(rawKey);
       const expiresAt = now + termMs;
       grantProKey(this.db, keyHash, expiresAt);
+      log.info("pro purchase pending", { reference, keyHash, renewed: false });
       return {
         rawKey,
         renewed: false,
         expiresAt,
+        reference,
         commit: () => {
-          recordProPurchase(this.db, keyHash, PRO_TERM_DAYS, amountAtomic, false);
+          record(keyHash, false);
           return expiresAt;
         },
+        discard: () => discardProKey(this.db, keyHash),
       };
     }
+    log.info("pro purchase pending", { reference, keyHash: row.keyHash, renewed: true });
     return {
       renewed: true,
       expiresAt: Math.max(now, row.expiresAt ?? 0) + termMs,
+      reference,
       commit: () => {
         const end = extendProKey(this.db, row.keyHash, termMs);
-        recordProPurchase(this.db, row.keyHash, PRO_TERM_DAYS, amountAtomic, true);
+        record(row.keyHash, true);
         return end;
       },
+      discard: () => undefined,
     };
   }
 }

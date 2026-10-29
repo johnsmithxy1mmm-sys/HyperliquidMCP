@@ -46,6 +46,8 @@ export interface BillingLike {
     renewed: boolean;
     expiresAt: number;
     commit(): number;
+    discard(): void;
+    reference: string;
   };
 }
 
@@ -124,6 +126,10 @@ export interface ToolDef {
     data: unknown;
     /** Runs after the payment has settled and before the result is returned: for what must not happen on an unpaid call. */
     onDelivered?: () => void;
+    /** Runs when the call ends without delivering (payment refused, cancelled): drops what run prepared. */
+    onUndelivered?: () => void;
+    /** Quoted in errors and logs so a payment that went wrong can be matched to this call. */
+    reference?: string;
   }>;
 }
 
@@ -160,6 +166,8 @@ export function registerTool(server: McpServer, def: ToolDef, ctx: ToolContext):
     // The SDK validates args against inputSchema before calling us.
     async (args: Record<string, unknown>, extra?: { signal?: AbortSignal }) => {
       let charge: Charge | undefined;
+      let undo: (() => void) | undefined;
+      let reference: string | undefined;
       try {
         if (def.requiresSubject && (!ctx.subject || ctx.subject === "anon")) {
           throw new ToolError(
@@ -174,7 +182,9 @@ export function registerTool(server: McpServer, def: ToolDef, ctx: ToolContext):
         } else if (def.tier === "premium") {
           charge = await ctx.authorize(def.name);
         }
-        const { summary, data, onDelivered } = await def.run(args ?? {}, ctx);
+        const { summary, data, onDelivered, onUndelivered, reference: ref } = await def.run(args ?? {}, ctx);
+        undo = onUndelivered;
+        reference = ref;
         // The SDK drops the response of a cancelled or disconnected request, so
         // charging for it would take money for a result nobody receives.
         if (extra?.signal?.aborted) {
@@ -182,16 +192,27 @@ export function registerTool(server: McpServer, def: ToolDef, ctx: ToolContext):
         }
         // x402 settles only now that the tool has delivered; if settlement
         // fails, the result is withheld rather than given away.
-        await charge?.settle?.();
+        try {
+          await charge?.settle?.();
+        } catch (err) {
+          if (reference && err instanceof ToolError) {
+            log.error("payment for a purchase did not settle", { tool: def.name, reference, code: err.code });
+            throw new ToolError(err.code, `${err.message} Reference: ${reference}.`, { ...err.details, reference });
+          }
+          throw err;
+        }
+        undo = undefined; // paid: what run prepared is now the purchase
         try {
           onDelivered?.();
         } catch (err) {
           // The money has moved: say so, with enough for the operator to put it right.
-          log.error("tool could not finish after its payment settled", { tool: def.name, err: String(err) });
+          const ref = reference ?? randomBytes(4).toString("hex");
+          log.error("tool could not finish after its payment settled", { tool: def.name, reference: ref, err: String(err) });
           throw new ToolError(
             "activation_failed",
             `Your payment was taken but ${def.name} could not finish. Open an issue with the time of the payment and ` +
-              `this reference: ${randomBytes(4).toString("hex")}.`,
+              `this reference: ${ref}.`,
+            { reference: ref },
           );
         }
         return {
@@ -201,6 +222,7 @@ export function registerTool(server: McpServer, def: ToolDef, ctx: ToolContext):
       } catch (err) {
         // A call that delivered nothing must not use up the caller's quota or money.
         charge?.refund();
+        undo?.();
         return toErrorResult(err, def.name);
       }
     },

@@ -92,6 +92,11 @@ export function grantProKey(database: Database.Database, keyHash: string, expire
     .run(keyHash, Date.now(), expiresAt);
 }
 
+/** Remove a bought key whose payment never settled (its raw value was never handed out). */
+export function discardProKey(database: Database.Database, keyHash: string): void {
+  database.prepare(`DELETE FROM api_keys WHERE key_hash = ? AND label = 'pro-x402'`).run(keyHash);
+}
+
 /**
  * Add `termMs` to a key's end (counted from now when it has run out or has no
  * end yet) and make it Pro. Computed in SQL so two renewals that race both
@@ -100,14 +105,15 @@ export function grantProKey(database: Database.Database, keyHash: string, expire
  */
 export function extendProKey(database: Database.Database, keyHash: string, termMs: number, now = Date.now()): number {
   const tx = database.transaction(() => {
-    database
+    const changed = database
       .prepare(
         `UPDATE api_keys SET tier = 'pro', disabled = 0,
            label = CASE WHEN label LIKE '%-bootstrap' THEN label ELSE 'pro-x402' END,
            expires_at = MAX(?, COALESCE(expires_at, 0)) + ?
          WHERE key_hash = ?`,
       )
-      .run(now, termMs, keyHash);
+      .run(now, termMs, keyHash).changes;
+    if (changed === 0) throw new Error("the api key no longer exists");
     database.prepare(`DELETE FROM free_key_grants WHERE key_hash = ?`).run(keyHash);
     return (database.prepare(`SELECT expires_at FROM api_keys WHERE key_hash = ?`).get(keyHash) as { expires_at: number }).expires_at;
   });
