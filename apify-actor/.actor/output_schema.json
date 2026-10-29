@@ -1,0 +1,19 @@
+{
+  "actorOutputSchemaVersion": 1,
+  "title": "HyperSignal results",
+  "description": "What one run returns: the proxied tool's result, as a dataset item and as the OUTPUT record.",
+  "properties": {
+    "results": {
+      "type": "string",
+      "title": "Signal results",
+      "description": "Dataset with one item per run: { tool, summary, data, ts }, or { error } when the call failed.",
+      "template": "{{links.apiDefaultDatasetUrl}}/items"
+    },
+    "output": {
+      "type": "string",
+      "title": "OUTPUT record",
+      "description": "The same { tool, summary, data } as a single JSON record in the key-value store.",
+      "template": "{{links.apiDefaultKeyValueStoreUrl}}/records/OUTPUT"
+    }
+  }
+}
