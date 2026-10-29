@@ -25,7 +25,8 @@ export interface DueSnapshot {
 /**
  * How a snapshot's account value was measured. Before v1.14.0 it was the main
  * dex only ("main"), while forward PnL already covered HIP-3 fills; those rows
- * overstate returns for HIP-3 traders and are left out of calibration.
+ * overstate returns for HIP-3 traders and are left out of calibration, of the
+ * resolver queue and of the counts reported next to calibration.
  */
 export const EQUITY_BASIS = "traded_dexes";
 
@@ -127,10 +128,10 @@ export class ScoreStore {
     const rows = this.db
       .prepare(
         `SELECT id, address, ts, horizon_days FROM score_snapshots
-         WHERE resolved_at IS NULL AND attempts < ? AND (ts + horizon_days * 86400000) <= ?
+         WHERE resolved_at IS NULL AND attempts < ? AND equity_basis = ? AND (ts + horizon_days * 86400000) <= ?
          ORDER BY attempts ASC, ts ASC LIMIT ?`,
       )
-      .all(MAX_RESOLVE_ATTEMPTS, now, limit) as Array<{
+      .all(MAX_RESOLVE_ATTEMPTS, EQUITY_BASIS, now, limit) as Array<{
       id: string;
       address: string;
       ts: number;
@@ -165,8 +166,8 @@ export class ScoreStore {
   /** Observations abandoned after repeated resolution failures. */
   abandoned(): number {
     const row = this.db
-      .prepare(`SELECT COUNT(*) AS n FROM score_snapshots WHERE resolved_at IS NULL AND attempts >= ?`)
-      .get(MAX_RESOLVE_ATTEMPTS) as { n: number };
+      .prepare(`SELECT COUNT(*) AS n FROM score_snapshots WHERE resolved_at IS NULL AND attempts >= ? AND equity_basis = ?`)
+      .get(MAX_RESOLVE_ATTEMPTS, EQUITY_BASIS) as { n: number };
     return row.n;
   }
 
@@ -216,9 +217,9 @@ export class ScoreStore {
       .prepare(
         `SELECT COUNT(*) AS total,
                 SUM(CASE WHEN resolved_at IS NOT NULL THEN 1 ELSE 0 END) AS resolved
-         FROM score_snapshots`,
+         FROM score_snapshots WHERE equity_basis = ?`,
       )
-      .get() as { total: number; resolved: number | null };
+      .get(EQUITY_BASIS) as { total: number; resolved: number | null };
     const resolved = row.resolved ?? 0;
     return { total: row.total, resolved, pending: row.total - resolved };
   }
