@@ -151,13 +151,14 @@ Point an MCP HTTP client at `https://your-host/mcp` and send `X-API-Key: <key>` 
 | anonymous (no key) | free tools only | — |
 | free key | 100 premium calls/month | $0 |
 | pro key | unlimited premium calls | $29/month |
-| x402 pay-per-call | per premium call | $0.01 USDC on Base, where the server has x402 switched on |
+| x402 pay-per-call | per premium call | $0.01 USDC on Base |
 
 **How to get each**
 - **Free key:** call `hl_request_free_key`. Instant, no signup.
-- **x402 pay-per-call:** a premium call without a key answers with x402 payment requirements when the
-  server has x402 enabled; an x402-capable client pays in USDC on Base and the call runs.
-  On the hosted server this is not enabled yet.
+- **x402 pay-per-call:** on the hosted server a premium call without a key answers with x402 payment
+  requirements (0.01 USDC on Base, exact scheme); an x402-capable client signs the payment, retries with
+  the `X-PAYMENT` header, and the call runs. The payment is settled only after the tool has delivered,
+  so a failed call costs nothing.
 - **Pro:** keys are issued by the operator for now. Open a
   [GitHub issue](https://github.com/johnsmithxy1mmm-sys/HyperliquidMCP/issues/new?title=Pro+key+request)
   titled "Pro key request" and say how to reach you (for example a Telegram handle). The operator
