@@ -53,7 +53,8 @@ export const scoreCalibration: ToolDef = {
           "Each time a wallet is scored, (address, score) is recorded once per day. After the forward window " +
           "elapses, realized PnL from that wallet's fills over the window is measured (deposit-immune, unlike " +
           "equity change) and divided by the account value at sampling time, so account size alone cannot " +
-          "correlate with it. Per wallet, only observations whose forward windows do not overlap count toward n, since " +
+          "correlate with it. Account value covers the main dex plus the HIP-3 dexes the wallet traded, as its " +
+          "fills do; snapshots taken before v1.14.0 (main-dex equity only) are excluded. Per wallet, only observations whose forward windows do not overlap count toward n, since " +
           "daily rows of one wallet share almost all of their outcome. " +
           "Spearman rank correlation is used because only the ordering matters and returns are " +
           "heavy-tailed. A positive verdict requires n>=30, p<0.05 and rho>0.2.",
