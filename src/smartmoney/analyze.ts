@@ -4,17 +4,24 @@
  * from the pure scoring so the latter stays unit-testable.
  */
 import type { ToolContext } from "../tools/registry.js";
-import { normalizeAccount } from "../hl/account.js";
+import { normalizeAccount, mergeStates } from "../hl/account.js";
+import { dexOf } from "../hl/markets.js";
 import { buildTraderProfile, type TraderProfile } from "./profile.js";
 import { log } from "../logger.js";
 
 export async function analyzeAddress(ctx: ToolContext, address: string, lookbackDays: number): Promise<TraderProfile> {
   const startTime = Date.now() - lookbackDays * 86_400_000;
-  const [fills, state] = await Promise.all([
+  const [fills, main] = await Promise.all([
     ctx.hl.userFillsByTime(address, startTime),
     ctx.hl.clearinghouseState(address),
   ]);
-  return buildTraderProfile(address, fills, normalizeAccount(state));
+  // Fills cover every perp dex, so equity and positions must too: PnL made on
+  // HIP-3 dexes over main-dex equity alone overstates the return.
+  // shortcut: a dex with positions but no fills in the window is missed; read every dex if that matters.
+  const dexs = [...new Set(fills.map((f) => dexOf(f.coin)).filter((d): d is string => !!d))];
+  const others = await Promise.all(dexs.map((d) => ctx.hl.clearinghouseState(address, d)));
+  // A delisted dex answers null.
+  return buildTraderProfile(address, fills, normalizeAccount(mergeStates([main, ...others.filter((s) => s)])));
 }
 
 export async function analyzeCohort(

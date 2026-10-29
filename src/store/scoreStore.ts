@@ -22,6 +22,14 @@ export interface DueSnapshot {
   horizonDays: number;
 }
 
+/**
+ * How a snapshot's account value was measured. Before v1.14.0 it was the main
+ * dex only ("main"), while forward PnL already covered HIP-3 fills; those rows
+ * overstate returns for HIP-3 traders and are left out of calibration, of the
+ * resolver queue and of the counts reported next to calibration.
+ */
+export const EQUITY_BASIS = "traded_dexes";
+
 /** A snapshot is abandoned after this many failed resolution attempts. */
 export const MAX_RESOLVE_ATTEMPTS = 5;
 
@@ -52,6 +60,10 @@ export class ScoreStore {
     // cannot sit at the head of the queue forever and starve every later row.
     if (!this.hasColumn("attempts")) {
       db.exec(`ALTER TABLE score_snapshots ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0`);
+    }
+    // Added in v1.14.0; existing rows keep "main".
+    if (!this.hasColumn("equity_basis")) {
+      db.exec(`ALTER TABLE score_snapshots ADD COLUMN equity_basis TEXT NOT NULL DEFAULT 'main'`);
     }
     // Enforce the per-(address, day, horizon) dedupe in the schema, not just in
     // the read-then-write in record(): stdio and http can share one DB file.
@@ -97,10 +109,10 @@ export class ScoreStore {
 
     this.db
       .prepare(
-        `INSERT OR IGNORE INTO score_snapshots (id, address, score, account_value, ts, horizon_days)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT OR IGNORE INTO score_snapshots (id, address, score, account_value, ts, horizon_days, equity_basis)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(randomUUID(), input.address, input.score, input.accountValue, ts, input.horizonDays);
+      .run(randomUUID(), input.address, input.score, input.accountValue, ts, input.horizonDays, EQUITY_BASIS);
   }
 
   /**
@@ -116,10 +128,10 @@ export class ScoreStore {
     const rows = this.db
       .prepare(
         `SELECT id, address, ts, horizon_days FROM score_snapshots
-         WHERE resolved_at IS NULL AND attempts < ? AND (ts + horizon_days * 86400000) <= ?
+         WHERE resolved_at IS NULL AND attempts < ? AND equity_basis = ? AND (ts + horizon_days * 86400000) <= ?
          ORDER BY attempts ASC, ts ASC LIMIT ?`,
       )
-      .all(MAX_RESOLVE_ATTEMPTS, now, limit) as Array<{
+      .all(MAX_RESOLVE_ATTEMPTS, EQUITY_BASIS, now, limit) as Array<{
       id: string;
       address: string;
       ts: number;
@@ -154,8 +166,8 @@ export class ScoreStore {
   /** Observations abandoned after repeated resolution failures. */
   abandoned(): number {
     const row = this.db
-      .prepare(`SELECT COUNT(*) AS n FROM score_snapshots WHERE resolved_at IS NULL AND attempts >= ?`)
-      .get(MAX_RESOLVE_ATTEMPTS) as { n: number };
+      .prepare(`SELECT COUNT(*) AS n FROM score_snapshots WHERE resolved_at IS NULL AND attempts >= ? AND equity_basis = ?`)
+      .get(MAX_RESOLVE_ATTEMPTS, EQUITY_BASIS) as { n: number };
     return row.n;
   }
 
@@ -174,10 +186,10 @@ export class ScoreStore {
     const rows = this.db
       .prepare(
         `SELECT address, ts, horizon_days, score, forward_pnl, account_value FROM score_snapshots
-         WHERE resolved_at IS NOT NULL AND forward_pnl IS NOT NULL AND account_value > 0
+         WHERE resolved_at IS NOT NULL AND forward_pnl IS NOT NULL AND account_value > 0 AND equity_basis = ?
          ORDER BY address, ts ASC`,
       )
-      .all() as Array<{ address: string; ts: number; horizon_days: number; score: number; forward_pnl: number; account_value: number }>;
+      .all(EQUITY_BASIS) as Array<{ address: string; ts: number; horizon_days: number; score: number; forward_pnl: number; account_value: number }>;
     // The sampler scores the same wallets daily over a 30-day forward window,
     // so consecutive rows of one wallet share almost all of their outcome and
     // would inflate n (and shrink the p-value) without adding evidence. Keep,
@@ -205,9 +217,9 @@ export class ScoreStore {
       .prepare(
         `SELECT COUNT(*) AS total,
                 SUM(CASE WHEN resolved_at IS NOT NULL THEN 1 ELSE 0 END) AS resolved
-         FROM score_snapshots`,
+         FROM score_snapshots WHERE equity_basis = ?`,
       )
-      .get() as { total: number; resolved: number | null };
+      .get(EQUITY_BASIS) as { total: number; resolved: number | null };
     const resolved = row.resolved ?? 0;
     return { total: row.total, resolved, pending: row.total - resolved };
   }

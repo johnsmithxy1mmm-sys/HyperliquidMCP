@@ -112,7 +112,11 @@ export async function accountStateFor(
     return hl.clearinghouseState(user, dex ? await resolveDex(hl, dex) : undefined);
   }
   const builderDexs = (await hl.perpDexs()).flatMap((d) => (d?.name ? [d.name] : []));
-  const states = await Promise.all([hl.clearinghouseState(user), ...builderDexs.map((d) => hl.clearinghouseState(user, d))]);
+  return mergeStates(await Promise.all([hl.clearinghouseState(user), ...builderDexs.map((d) => hl.clearinghouseState(user, d))]));
+}
+
+/** One account from per-dex states (main dex first): margin figures summed, positions concatenated. */
+export function mergeStates(states: ClearinghouseState[]): ClearinghouseState {
   const sum = (pick: (s: ClearinghouseState) => string) => String(states.reduce((a, s) => a + num(pick(s)), 0));
   const margin = (key: "marginSummary" | "crossMarginSummary") => ({
     accountValue: sum((s) => s[key].accountValue),

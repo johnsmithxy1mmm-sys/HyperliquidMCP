@@ -2872,3 +2872,38 @@ test("hl_hip3_analytics filtered to one dex scans that exact dex, not its lowerc
   assert.deepEqual(out.dexsScanned, ["VOLMEX"]);
   assert.equal(out.hip3MarketCount, 1);
 });
+
+test("a wallet's score counts equity and positions on the HIP-3 dexes it traded, as its PnL does", async () => {
+  const { analyzeAddress } = await import("../src/smartmoney/analyze.js");
+  const fill = (coin: string, time: number) => ({ coin, px: "100", sz: "1", side: "B", time, dir: "Open Long", closedPnl: "0" });
+  const asked: Array<string | undefined> = [];
+  const hl = {
+    userFillsByTime: async () => [fill("BTC", 1), fill("xyz:XYZ100", 2), fill("gone:OLD", 3)],
+    clearinghouseState: async (_user: string, dex?: string) => {
+      asked.push(dex);
+      if (dex === "gone") return null; // a delisted dex answers null
+      return dex === "xyz" ? walletWith("xyz:XYZ100", 2) : walletWithBtc(1);
+    },
+  };
+
+  const profile = await analyzeAddress({ hl } as unknown as ToolContext, WHALE, 30);
+
+  assert.deepEqual(asked.map(String).sort(), ["gone", "undefined", "xyz"]);
+  assert.equal(profile.accountValue, 2_000_000, "main-dex equity plus the xyz dex's");
+  assert.equal(profile.topConcentrationPct, 0.6667, "the $120k xyz position is part of the book");
+});
+
+test("calibration uses only snapshots whose equity counts every dex the wallet traded", () => {
+  const db = new BetterSqlite3(":memory:");
+  const store = new ScoreStore(db);
+  const day = 86_400_000;
+  store.record({ address: "0xold", score: 1, accountValue: 1_000, horizonDays: 30, ts: 0 });
+  db.prepare(`UPDATE score_snapshots SET equity_basis = 'main'`).run(); // taken before v1.14.0
+  store.record({ address: "0xnew", score: 2, accountValue: 1_000, horizonDays: 30, ts: 0 });
+  const due = store.due(10, 400 * day);
+  for (const row of due) store.setOutcome(row.id, 10);
+
+  assert.equal(due.length, 1, "old-basis rows are not resolved: they no longer count");
+  assert.deepEqual(store.outcomes().map((o) => o.score), [2]);
+  assert.deepEqual(store.counts(), { total: 1, resolved: 1, pending: 0 }, "counts match what calibration uses");
+});
