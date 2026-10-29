@@ -2940,3 +2940,15 @@ test("a premium call with x402 on but no payment says how to pay, and what Pro c
     (err: unknown) => err instanceof ToolError && err.message.includes("$29") && err.message.includes(PRICING_URL),
   );
 });
+
+test("the pricing URL points at a heading the README really has, and no doc still quotes the old Pro price", async () => {
+  const { PRICING_URL } = await import("../src/billing/tiers.js");
+  const { readFileSync } = await import("node:fs");
+  const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
+  const readme = read("README.md");
+
+  assert.ok(PRICING_URL.endsWith("#pricing") && /^## Pricing$/m.test(readme), "PRICING_URL needs a '## Pricing' heading");
+  for (const file of ["README.md", "docs/LAUNCH.md", "docs/RUNBOOK.md", "PROJECT_BRIEF.md"]) {
+    assert.ok(!/\$19\b/.test(read(file)), `${file} still quotes the old $19 Pro price`);
+  }
+});

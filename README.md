@@ -166,25 +166,13 @@ Point an MCP HTTP client at `https://your-host/mcp` and send `X-API-Key: <key>` 
 **For operators**
 - **API keys:** provision via `HYPERSIGNAL_PRO_KEYS` / `HYPERSIGNAL_FREE_KEYS` (comma-separated raw
   keys, hashed before storage in SQLite). Usage counters are per key, per month. A key removed from
-  these lists is revoked on the next start.
+  these lists is revoked on the next start, as long as at least one key stays listed: two empty
+  lists read as a lost secret and revoke nothing.
 - **x402:** when a request has no key/quota and `X402_ENABLED=true`, premium tools return an x402
   payment-required response with requirements; after facilitator verification+settlement the call
   runs. Without a facilitator it fails closed (never fabricates a payment).
 - **Apify:** `apify-actor/` re-exports the best-selling premium tools as a pay-per-event Actor.
   It is private for now.
-
----|---|---|
-| anonymous (no key) | free tools only | — |
-| free key | 100 premium calls/month | $0 |
-| pro key | unlimited analytics | $19/mo |
-| x402 pay-per-call | per premium call | $0.005–0.02 USDC on Base |
-
-- **API keys** — provision via `HYPERSIGNAL_PRO_KEYS` / `HYPERSIGNAL_FREE_KEYS` (comma-separated raw
-  keys, hashed before storage in SQLite). Usage counters are per key, per month.
-- **x402** — when a request has no key/quota and `X402_ENABLED=true`, premium tools return an x402
-  payment-required response with requirements; after facilitator verification+settlement the call
-  runs. Without a facilitator it fails closed (never fabricates a payment).
-- **Apify** — `apify-actor/` re-exports the best-selling premium tools as a pay-per-event Actor.
 
 ---
 
